@@ -1,123 +1,153 @@
-# app/serializers.py
-import re
-from django.contrib.auth.hashers import check_password, make_password
 from rest_framework import serializers
-from .models import Merchant, Payment
+from django.contrib.auth.hashers import check_password
+from decimal import Decimal, InvalidOperation
+from django.core.validators import RegexValidator
+from django.utils import timezone
+from rest_framework.authtoken.models import Token
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
+from .models import Merchant, Payment, ENTITY_TYPE_CHOICES, OTP, APIKey
 
 
-class MerchantSerializer(serializers.ModelSerializer):
+
+phone_validator = RegexValidator(r'^\+?\d{7,15}$', 'Enter a valid phone number (7-15 digits, optional +).')
+pincode_validator = RegexValidator(r'^\d{4,6}$', 'Enter a valid pincode (4-6 digits).')
+
+
+class MerchantSignupSerializer(serializers.ModelSerializer):
+    phone_number = serializers.CharField(validators=[phone_validator])
+    pincode = serializers.CharField(required=False, allow_blank=True, validators=[pincode_validator])
+    entity_type = serializers.ChoiceField(choices=ENTITY_TYPE_CHOICES)
+    email = serializers.EmailField(write_only=True)
+    password = serializers.CharField(write_only=True, min_length=8)
+
     class Meta:
         model = Merchant
         fields = [
-            'id',
-            'business_name',
-            'phone_number',
-            'business_type',
-            'gstin',
-            'business_address',
-            'email',
-            'password',
-            'callback_url',
-            'api_key',
+            "business_name",
+            "contact_name",
+            "phone_number",
+            "entity_type",
+            "business_address",
+            "pincode",
+            "email",
+            "password",
         ]
-        extra_kwargs = {
-            "password": {"write_only": True}, 
-            "webhook_secret": {"write_only": True}
-        }
 
-    # Email validation
     def validate_email(self, value):
-        email_regex = r'^[\w\.-]+@[\w\.-]+\.\w+$'
-        if not re.match(email_regex, value):
-            raise serializers.ValidationError("Invalid email format.")
-        if Merchant.objects.filter(email=value).exists():
-            raise serializers.ValidationError("A merchant with this email already exists.")
-        return value
-
-    # Phone number validation
-    def validate_phone_number(self, value):
-        phone_regex = r'^\+?\d{10,15}$'  # accepts 10–15 digits, optional +
-        if not re.match(phone_regex, value):
-            raise serializers.ValidationError("Invalid phone number format. Use digits only, optionally with +countrycode.")
-        if Merchant.objects.filter(phone_number=value).exists():
-            raise serializers.ValidationError("A merchant with this phone number already exists.")
-        return value
-
-    # Password validation
-    def validate_password(self, value):
-        if len(value) < 8:
-            raise serializers.ValidationError("Password must be at least 8 characters long.")
-        if not re.search(r'[A-Z]', value):
-            raise serializers.ValidationError("Password must contain at least one uppercase letter.")
-        if not re.search(r'[a-z]', value):
-            raise serializers.ValidationError("Password must contain at least one lowercase letter.")
-        if not re.search(r'\d', value):
-            raise serializers.ValidationError("Password must contain at least one digit.")
-        if not re.search(r'[@$!%*?&]', value):
-            raise serializers.ValidationError("Password must contain at least one special character (@$!%*?&).")
-        return value
-
-    # Callback URL validation
-    def validate_callback_url(self, value):
-        if value and not value.startswith(('http://', 'https://')):
-            raise serializers.ValidationError("Callback URL must start with http:// or https://")
+        """Ensure no user already exists with this email"""
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
         return value
 
     def create(self, validated_data):
-        raw_pw = validated_data.pop("password")
-        validated_data["password"] = make_password(raw_pw)
-        return Merchant.objects.create(**validated_data)
+        # Extract user-related fields
+        email = validated_data.pop("email")
+        password = validated_data.pop("password")
+
+        # Create the Django User
+        user = User.objects.create_user(username=email, email=email, password=password)
+
+        # Create the Merchant profile linked to this user
+        merchant = Merchant.objects.create(
+            user=user,
+            business_name=validated_data.get("business_name", ""),
+            contact_name=validated_data["contact_name"],
+            phone_number=validated_data["phone_number"],
+            entity_type=validated_data.get("entity_type"),
+            business_address=validated_data.get("business_address", ""),
+            pincode=validated_data.get("pincode", ""),
+            is_active=False,
+        )
+
+        # Automatically create a DRF token for authentication
+        token, _ = Token.objects.get_or_create(user=user)
+        merchant.token = token.key  # store for serializer representation
+        return merchant
+
+    def to_representation(self, instance):
+        """Customize response to include token and email"""
+        rep = super().to_representation(instance)
+        rep["email"] = instance.user.email
+        rep["token"] = instance.token
+        return rep
+
 
 class MerchantLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    password = serializers.CharField()
+    password = serializers.CharField(write_only=True)
 
-    def validate(self, data):
-        from .models import Merchant
-        email = data.get("email")
-        password = data.get("password")
-
+    def validate(self, attrs):
+        email = attrs.get("email")
+        password = attrs.get("password")
+        user = authenticate(username=email, password=password)
+        if user is None:
+            raise serializers.ValidationError({"detail": "Invalid email or password."})
         try:
-            merchant = Merchant.objects.get(email=email)
+            merchant = user.merchant_profile 
         except Merchant.DoesNotExist:
-            raise serializers.ValidationError("Invalid email")
+            raise serializers.ValidationError({"detail": "No merchant profile found for this account."})
 
-        if not check_password(password, merchant.password):
-            raise serializers.ValidationError("Invalid password")
+        attrs["user"] = user
+        attrs["merchant"] = merchant
+        return attrs
 
-        data["merchant"] = merchant
-        return data
+
+class SendOTPSerializer(serializers.Serializer):
+    purpose = serializers.CharField(required=False, allow_blank=True)
+
+
+class VerifyOTPSerializer(serializers.Serializer):
+    otp_id = serializers.IntegerField(required=False)
+    otp_code = serializers.CharField(max_length=6)
+
+    def validate_otp_code(self, value):
+        if not value.isdigit() or len(value) != 6:
+            raise serializers.ValidationError("OTP must be 6 digits.")
+        return value
+
+
+class GenerateAPIKeySerializer(serializers.Serializer):
+    name = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    mode = serializers.ChoiceField(choices=("test", "live"), default="test")
+    ttl_seconds = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+
+class APIKeyListSerializer(serializers.ModelSerializer):
+    masked_secret = serializers.SerializerMethodField()
+
+    class Meta:
+        model = APIKey
+        fields = ("id", "key_id", "name", "mode", "created_at", "expires_at", "revoked", "last_used_at", "masked_secret")
+
+    def get_masked_secret(self, obj):
+        return f"{obj.key_id} ••••••••"
 
 
 class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = '__all__'
-
-    def validate(self, data):
-        required_fields = ['order_id', 'amount', 'vpa']
-        errors = {}
-
-        for field in required_fields:
-            if not data.get(field):
-                errors[field] = f"{field.replace('_', ' ').capitalize()} is required."
-
-        if errors:
-            raise serializers.ValidationError(errors)
-
-        return data
-
-
-class PaymentHistorySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Payment
-        fields = ['order_id', 'amount', 'status', 'timestamp']
+        read_only_fields = [
+            'status',
+            'provider_order_id',
+            'provider_payment_id',
+            'provider_order_response',
+            'provider_payment_response',
+            'amount_in_paise',
+            'currency',
+            'idempotency_key',
+            'attempts',
+            'created_at',
+            'updated_at',
+            'paid_at',
+            'cancelled_at',
+        ]
         
-
-
-class MerchantWithPaymentsSerializer(serializers.ModelSerializer):
-    payments = PaymentHistorySerializer(source='payment_set', many=True)
-
-    class Meta:
-        model = Merchant
-        fields = ['id', 'business_name', 'upi_id', 'email', 'api_key', 'payments']
+    def validate_amount(self, value):
+        try:
+            # Accept string or numeric, ensure two decimal places
+            Decimal(str(value))
+        except Exception:
+            raise serializers.ValidationError("Invalid amount")
+        return value

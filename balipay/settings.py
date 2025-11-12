@@ -12,6 +12,18 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 import os
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")   # adjust path if .env is elsewhere
+
+MESSAGECENTRAL_BASE = os.getenv("MESSAGECENTRAL_BASE", "https://cpaas.messagecentral.com")
+MESSAGECENTRAL_CUSTOMER_ID = os.getenv("MESSAGECENTRAL_CUSTOMER_ID")
+MESSAGECENTRAL_BASE64_KEY = os.getenv("MESSAGECENTRAL_BASE64_KEY")
+MESSAGECENTRAL_COUNTRY_CODE = os.getenv("MESSAGECENTRAL_COUNTRY_CODE", "91")
+OTP_TTL_SECONDS = 5 * 60   # 300 seconds = 5 minutes
+RESEND_COOLDOWN_SECONDS = 60
+MAX_OTP_ATTEMPTS = 5
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -24,7 +36,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = "django-insecure-08p(51c8gzsk@$f3o&)h0nly$7idk8wu4^p_zypl7p(2251z0b"
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True    
 
 ALLOWED_HOSTS = ['razal.pythonanywhere.com','*']
 
@@ -43,6 +55,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "gateway",
     "rest_framework",
+    "rest_framework.authtoken",
 ]
 
 MIDDLEWARE = [
@@ -107,7 +120,8 @@ AUTH_PASSWORD_VALIDATORS = [
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATIC_URL = '/static/'
 
-
+RAZORPAY_KEY_ID = "rzp_test_RZcCqBa5GoA3C8"
+RAZORPAY_KEY_SECRET = "bVdxysBO2ohy30oLX9o42we7"
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
@@ -119,6 +133,13 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 
 USE_TZ = True
+
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.TokenAuthentication",
+    ]
+}
 
 
 # Static files (CSS, JavaScript, Images)
