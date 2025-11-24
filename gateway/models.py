@@ -28,7 +28,7 @@ class Merchant(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return self.business_name or self.contact_name or self.email
+        return self.business_name or self.contact_name or self.email and self.token
 
 class OTP(models.Model):
     merchant = models.ForeignKey("Merchant", on_delete=models.CASCADE, related_name="otps")
@@ -99,14 +99,14 @@ class APIKey(models.Model):
     @classmethod
     def _make_key_id(cls, raw_secret: str):
         suffix = secrets.token_hex(6)
-        if raw_secret.startswith("balipay_live_") or raw_secret.startswith("balipay_test_"):
-            prefix = raw_secret.split("_")[0] + "_" + raw_secret.split("_")[1]  # balipay_test
+        if raw_secret.startswith("ignivox_live_") or raw_secret.startswith("ignivox_test_"):
+            prefix = raw_secret.split("_")[0] + "_" + raw_secret.split("_")[1]  
             return f"{prefix}_{suffix}"
         return f"api_{suffix}"
 
     @classmethod
     def create_key(cls, merchant, name=None, mode="test", ttl_seconds: int = None):
-        prefix = "balipay_test_" if mode == "test" else "balipay_live_"
+        prefix = "ignivox_test_" if mode == "test" else "ignivox_live_"
         raw = gen_raw_key(prefix=prefix)
         key_id = cls._make_key_id(raw)
         hashed = make_password(raw)
@@ -194,3 +194,49 @@ class Payment(models.Model):
 
     def __str__(self):
         return f"{self.merchant.business_name} - {self.order_id} - {self.amount}"
+
+
+
+
+class Refund(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_PROCESSED = "processed"
+    STATUS_FAILED = "failed"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_PROCESSED, "Processed"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    merchant = models.ForeignKey("Merchant", on_delete=models.CASCADE, related_name="refunds")
+    payment = models.ForeignKey("Payment", on_delete=models.CASCADE, related_name="refunds")
+
+    # Provider refund id (Razorpay refund id, ex: rfd_xxx)
+    provider_refund_id = models.CharField(max_length=128, blank=True, null=True)
+
+    # amount of this refund (supports partial refunds)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=8, default="INR")
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    reason = models.CharField(max_length=255, blank=True, null=True)
+
+    # raw provider response, for debugging / reconciliation
+    provider_refund_response = models.JSONField(blank=True, null=True)
+
+    # optional idempotency / audit
+    idempotency_key = models.CharField(max_length=255, blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    processed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["provider_refund_id"]),
+            models.Index(fields=["merchant", "payment"]),
+        ]
+
+    def __str__(self):
+        return f"Refund {self.id} / Payment {self.payment_id} / {self.amount}"
