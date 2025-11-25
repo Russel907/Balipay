@@ -23,6 +23,9 @@ class Merchant(models.Model):
     business_address = models.TextField(blank=True, null=True)
     pincode = models.CharField(max_length=10, blank=True, null=True)
     webhook_secret = models.CharField(max_length=128, blank=True, null=True)
+    gst_file = models.FileField(upload_to="documents/gst/", null=True, blank=True)
+    pan_file = models.FileField(upload_to="documents/pan/", null=True, blank=True)
+    signatory_file = models.FileField(upload_to="documents/signatory/", null=True, blank=True)
     is_active = models.BooleanField(default=False)  # becomes True after OTP verification
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

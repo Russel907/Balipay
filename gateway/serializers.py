@@ -20,6 +20,10 @@ class MerchantSignupSerializer(serializers.ModelSerializer):
     entity_type = serializers.ChoiceField(choices=ENTITY_TYPE_CHOICES)
     email = serializers.EmailField(write_only=True)
     password = serializers.CharField(write_only=True, min_length=8)
+    gst_file = serializers.FileField(required=False)
+    pan_file = serializers.FileField(required=False)
+    signatory_file = serializers.FileField(required=False)
+
 
     class Meta:
         model = Merchant
@@ -32,6 +36,10 @@ class MerchantSignupSerializer(serializers.ModelSerializer):
             "pincode",
             "email",
             "password",
+            "gst_file",
+            "pan_file",
+            "signatory_file",
+
         ]
 
     def validate_email(self, value):
