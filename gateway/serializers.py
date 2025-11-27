@@ -20,10 +20,13 @@ class MerchantSignupSerializer(serializers.ModelSerializer):
     entity_type = serializers.ChoiceField(choices=ENTITY_TYPE_CHOICES)
     email = serializers.EmailField(write_only=True)
     password = serializers.CharField(write_only=True, min_length=8)
+<<<<<<< HEAD
     gst_file = serializers.FileField(required=False)
     pan_file = serializers.FileField(required=False)
     signatory_file = serializers.FileField(required=False)
 
+=======
+>>>>>>> origin/main
 
     class Meta:
         model = Merchant
@@ -36,9 +39,12 @@ class MerchantSignupSerializer(serializers.ModelSerializer):
             "pincode",
             "email",
             "password",
+<<<<<<< HEAD
             "gst_file",
             "pan_file",
             "signatory_file",
+=======
+>>>>>>> origin/main
         ]
 
     def validate_email(self, value):
@@ -64,9 +70,12 @@ class MerchantSignupSerializer(serializers.ModelSerializer):
             entity_type=validated_data.get("entity_type"),
             business_address=validated_data.get("business_address", ""),
             pincode=validated_data.get("pincode", ""),
+<<<<<<< HEAD
             gst_file = validated_data.get("gst_file"),
             pan_file = validated_data.get("pan_file"),
             signatory_file = validated_data.get("signatory_file"),
+=======
+>>>>>>> origin/main
             is_active=False,
         )
 
@@ -161,6 +170,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         except Exception:
             raise serializers.ValidationError("Invalid amount")
         return value
+<<<<<<< HEAD
 
 class MerchantUpdateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -172,3 +182,5 @@ class MerchantUpdateSerializer(serializers.ModelSerializer):
             "business_address",
             "pincode",
         ]
+=======
+>>>>>>> origin/main
