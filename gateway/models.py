@@ -23,12 +23,22 @@ class Merchant(models.Model):
     business_address = models.TextField(blank=True, null=True)
     pincode = models.CharField(max_length=10, blank=True, null=True)
     webhook_secret = models.CharField(max_length=128, blank=True, null=True)
+<<<<<<< HEAD
+    gst_file = models.FileField(upload_to='documents/gst/', null=True, blank=True)
+    pan_file = models.FileField(upload_to='documents/pan/', null=True, blank=True)
+    signatory_file = models.FileField(upload_to='documents/signatory/', null=True, blank=True)
+=======
+>>>>>>> origin/main
     is_active = models.BooleanField(default=False)  # becomes True after OTP verification
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
+<<<<<<< HEAD
+        return self.business_name or self.contact_name or self.email
+=======
         return self.business_name or self.contact_name or self.email and self.token
+>>>>>>> origin/main
 
 class OTP(models.Model):
     merchant = models.ForeignKey("Merchant", on_delete=models.CASCADE, related_name="otps")
@@ -99,14 +109,23 @@ class APIKey(models.Model):
     @classmethod
     def _make_key_id(cls, raw_secret: str):
         suffix = secrets.token_hex(6)
+<<<<<<< HEAD
+        if raw_secret.startswith("balipay_live_") or raw_secret.startswith("balipay_test_"):
+            prefix = raw_secret.split("_")[0] + "_" + raw_secret.split("_")[1]  # balipay_test
+=======
         if raw_secret.startswith("ignivox_live_") or raw_secret.startswith("ignivox_test_"):
             prefix = raw_secret.split("_")[0] + "_" + raw_secret.split("_")[1]  
+>>>>>>> origin/main
             return f"{prefix}_{suffix}"
         return f"api_{suffix}"
 
     @classmethod
     def create_key(cls, merchant, name=None, mode="test", ttl_seconds: int = None):
+<<<<<<< HEAD
+        prefix = "balipay_test_" if mode == "test" else "balipay_live_"
+=======
         prefix = "ignivox_test_" if mode == "test" else "ignivox_live_"
+>>>>>>> origin/main
         raw = gen_raw_key(prefix=prefix)
         key_id = cls._make_key_id(raw)
         hashed = make_password(raw)
@@ -195,6 +214,41 @@ class Payment(models.Model):
     def __str__(self):
         return f"{self.merchant.business_name} - {self.order_id} - {self.amount}"
 
+<<<<<<< HEAD
+class Refund(models.Model):
+    STATUS_CHOICES = [
+        ("initiated", "Initiated"),
+        ("pending", "Pending"),
+        ("processed", "Processed"),
+        ("failed", "Failed"),
+    ]
+
+    # link refund → payment
+    payment = models.ForeignKey(
+        "Payment",
+        on_delete=models.CASCADE,
+        related_name="refunds"
+    )
+
+    # provider refund ID (from Razorpay or any provider)
+    provider_refund_id = models.CharField(max_length=255, blank=True, null=True)
+
+    # total refund amount
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+
+    # reason for refund
+    reason = models.CharField(max_length=255, blank=True, null=True)
+
+    # refund status
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="initiated")
+
+    # timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Refund {self.id} for {self.payment.order_id}"
+=======
 
 
 
@@ -240,3 +294,4 @@ class Refund(models.Model):
 
     def __str__(self):
         return f"Refund {self.id} / Payment {self.payment_id} / {self.amount}"
+>>>>>>> origin/main

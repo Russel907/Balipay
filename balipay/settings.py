@@ -36,9 +36,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = "django-insecure-08p(51c8gzsk@$f3o&)h0nly$7idk8wu4^p_zypl7p(2251z0b"
 
 # SECURITY WARNING: don't run with debug turned on in production!
+<<<<<<< HEAD
+DEBUG = True    
+
+ALLOWED_HOSTS = ['razal.pythonanywhere.com','*']
+=======
 DEBUG = os.getenv("DJANGO_DEBUG", "True") == "True"
 
 ALLOWED_HOSTS = ['*']
+>>>>>>> origin/main
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
@@ -154,4 +160,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # pythonanywhere
 # username:Razal
+<<<<<<< HEAD
 # password:Kaiztren@123
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+=======
+# password:Kaiztren@123
+>>>>>>> origin/main

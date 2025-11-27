@@ -3,7 +3,10 @@ import razorpay
 import logging
 import requests
 import urllib.parse, qrcode, io, base64, hmac, hashlib, json, time
+<<<<<<< HEAD
+=======
 from io import BytesIO
+>>>>>>> origin/main
 
 from django.shortcuts import get_object_or_404
 from django.db import transaction
@@ -22,6 +25,12 @@ from rest_framework.response import Response
 from rest_framework import status, generics, permissions
 from rest_framework.authtoken.models import Token
 from rest_framework import serializers
+<<<<<<< HEAD
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from gateway.models import Merchant
+=======
+>>>>>>> origin/main
 
 from decimal import Decimal, InvalidOperation
 from .utils import send_otp_via_messagecentral
@@ -33,6 +42,11 @@ from .models import Merchant, Payment, OTP, APIKey, Refund
 from .serializers import MerchantSignupSerializer, MerchantLoginSerializer, SendOTPSerializer, VerifyOTPSerializer, GenerateAPIKeySerializer, APIKeyListSerializer, PaymentSerializer 
 from .razorpay_client import create_razorpay_order
 
+<<<<<<< HEAD
+
+
+=======
+>>>>>>> origin/main
 logger = logging.getLogger(__name__)
 WEBHOOK_TOLERANCE_SECONDS = 5 * 60
 REPLAY_CACHE_PREFIX = "wh_sig_"
@@ -82,10 +96,13 @@ class MerchantLoginView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+<<<<<<< HEAD
+=======
 
 
 
 
+>>>>>>> origin/main
         merchant =  merchant = getattr(request.user, "merchant_profile", None)
         if not merchant:
             return Response(
@@ -289,10 +306,16 @@ class IsMerchantAuthenticated(permissions.IsAuthenticated):
     pass
 
 
+<<<<<<< HEAD
+class GenerateAPIKeyView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = GenerateAPIKeySerializer
+=======
 class BaseGenerateAPIKeyView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = GenerateAPIKeySerializer
     mode = None  # override in child classes
+>>>>>>> origin/main
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -300,6 +323,24 @@ class BaseGenerateAPIKeyView(generics.GenericAPIView):
 
         merchant = getattr(request.user, "merchant_profile", None)
         if not merchant:
+<<<<<<< HEAD
+            return Response({"detail": "Merchant profile not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not getattr(merchant, "is_active", False):
+            return Response({"detail": "Merchant phone number not verified. Cannot generate API keys."},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        name = serializer.validated_data.get("name")
+        mode = serializer.validated_data.get("mode", "test")
+        ttl_seconds = serializer.validated_data.get("ttl_seconds", None)
+
+        with transaction.atomic():
+            api_key_obj, raw_secret = APIKey.create_key(merchant=merchant, name=name, mode=mode, ttl_seconds=ttl_seconds)
+
+        return Response({
+            "key_id": api_key_obj.key_id,
+            "secret": raw_secret,            
+=======
             return Response({"detail": "Merchant profile not found."},
                             status=status.HTTP_404_NOT_FOUND)
 
@@ -324,6 +365,7 @@ class BaseGenerateAPIKeyView(generics.GenericAPIView):
         return Response({
             "key_id": api_key_obj.key_id,
             "secret": raw_secret,
+>>>>>>> origin/main
             "created_at": api_key_obj.created_at,
             "expires_at": api_key_obj.expires_at,
             "mode": api_key_obj.mode,
@@ -331,6 +373,8 @@ class BaseGenerateAPIKeyView(generics.GenericAPIView):
         }, status=status.HTTP_201_CREATED)
 
 
+<<<<<<< HEAD
+=======
 class GenerateTestAPIKeyView(BaseGenerateAPIKeyView):
     mode = "test"
 
@@ -339,6 +383,7 @@ class GenerateLiveAPIKeyView(BaseGenerateAPIKeyView):
     mode = "live"
 
 
+>>>>>>> origin/main
 class APIKeyListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = APIKeyListSerializer
@@ -746,7 +791,10 @@ class CreateDeepLinkView(APIView):
                 "message": "VPA / UPI ID not configured",
                 "orderId": order_id
             }, status=status.HTTP_400_BAD_REQUEST)
+<<<<<<< HEAD
+=======
 
+>>>>>>> origin/main
         if payment.status in ["cancelled", "failed", "paid", "completed"]:
             return Response({
                 "statusCode": 0,
@@ -765,6 +813,12 @@ class CreateDeepLinkView(APIView):
             f"&tr={payment.provider_order_id}"
         )
 
+<<<<<<< HEAD
+        # ✅ Save deeplink if model has the field (optional)
+        if hasattr(payment, "upi_link"):
+            payment.upi_link = upi_url
+            payment.save(update_fields=["upi_link"])
+=======
         # ✅ Generate QR code (PNG in base64)
         try:
             qr = qrcode.QRCode(
@@ -798,17 +852,69 @@ class CreateDeepLinkView(APIView):
 
         if update_fields:
             payment.save(update_fields=update_fields)
+>>>>>>> origin/main
 
         # ✅ Response
         return Response({
             "statusCode": 1,
             "Message": "Deeplink Generated Successfully",
             "OrderId": order_id,
+<<<<<<< HEAD
+            "Upiurl": upi_url
+        }, status=status.HTTP_200_OK)
+
+class CreateQRCodeView(APIView):
+    def post(self, request):
+        d = request.data
+
+        client_id = d.get("clientId")
+        secret_key = d.get("secretKey")
+        order_id = d.get("OrderId")
+
+        if not client_id or not secret_key or not order_id:
+            return Response({"statusCode": 0, "message": "Missing fields"}, status=400)
+
+        api_key, merchant = _authenticate_api_client(client_id, secret_key)
+        if not api_key or not merchant:
+            return Response({"statusCode": 0, "message": "Invalid credentials"}, status=401)
+
+        try:
+            payment = Payment.objects.get(merchant=merchant, order_id=order_id)
+        except Payment.DoesNotExist:
+            return Response({"statusCode": 0, "message": "Order not found"}, status=404)
+
+        upi_url = (
+            f"upi://pay?"
+            f"pa={payment.vpa}"
+            f"&pn={merchant.business_name}"
+            f"&am={payment.amount}"
+            f"&cu=INR"
+            f"&tr={payment.provider_order_id}"
+        )
+
+        import qrcode
+        import base64
+        from io import BytesIO
+
+        qr = qrcode.make(upi_url)
+        buffer = BytesIO()
+        qr.save(buffer, format="PNG")
+        qr_base64 = base64.b64encode(buffer.getvalue()).decode()
+
+        return Response({
+            "statusCode": 1,
+            "message": "QR Code Generated",
+            "orderId": order_id,
+            "qrCode": qr_base64
+        })
+
+=======
             "Upiurl": upi_url,
             # frontend can render: <img src={upiQrImage} />
             "upiQrImage": qr_data_url,
         }, status=status.HTTP_200_OK)
 
+>>>>>>> origin/main
 
 class CollectPayView(APIView):
 
@@ -998,6 +1104,8 @@ class CheckOrderStatusView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+<<<<<<< HEAD
+=======
 class CreateRefundView(APIView):
 
     def post(self, request):
@@ -1195,6 +1303,7 @@ class CreateRefundView(APIView):
 
 
 
+>>>>>>> origin/main
 def _two_dp(x: Decimal | None) -> str:
     if x is None:
         return "0.00"
@@ -1655,12 +1764,29 @@ class DashboardV2View(APIView):
         }
         return Response(payload, status=status.HTTP_200_OK)
 
+<<<<<<< HEAD
+class RefundDashboardView(APIView):
+    """
+    GET /api/payin/refunds/
+    Headers:
+      X-Client-Id
+      X-Client-Secret
+
+    Optional filters:
+      fromDate=YYYY-MM-DD
+      toDate=YYYY-MM-DD
+      orderId=<order_id>
+    """
+=======
 
 class PaymentsDashboardView(APIView):
+>>>>>>> origin/main
 
     def get(self, request):
         client_id = request.headers.get("X-Client-Id")
         secret_key = request.headers.get("X-Client-Secret")
+<<<<<<< HEAD
+=======
            
         if not client_id or not secret_key:
             return Response({"Statuscode": 0, "Message": "Missing credentials"},
@@ -1994,6 +2120,7 @@ class SummaryReportView(APIView):
         # auth (same as PaymentsDashboardView)
         client_id = request.headers.get("X-Client-Id")
         secret_key = request.headers.get("X-Client-Secret")
+>>>>>>> origin/main
 
         if not client_id or not secret_key:
             return Response({"Statuscode": 0, "Message": "Missing credentials"},
@@ -2004,6 +2131,40 @@ class SummaryReportView(APIView):
             return Response({"Statuscode": 0, "Message": "Invalid API credentials"},
                             status=status.HTTP_401_UNAUTHORIZED)
 
+<<<<<<< HEAD
+        # filters
+        from_date = request.query_params.get("fromDate")
+        to_date = request.query_params.get("toDate")
+        order_id = request.query_params.get("orderId")
+
+        qs = Refund.objects.filter(payment__merchant=merchant)
+
+        if from_date:
+            qs = qs.filter(created_at__date__gte=from_date)
+        if to_date:
+            qs = qs.filter(created_at__date__lte=to_date)
+        if order_id:
+            qs = qs.filter(payment__order_id=order_id)
+
+        # summary
+        refund_count = qs.count()
+        refund_amount = qs.aggregate(
+            total=Coalesce(Sum("amount"), Decimal("0.00"))
+        )["total"]
+
+        # table rows
+        rows = []
+        for idx, r in enumerate(qs.order_by("-created_at"), start=1):
+            rows.append({
+                "srNo": idx,
+                "transactionType": "Refund",
+                "refundId": r.id,
+                "txnId": r.payment.order_id,
+                "amount": str(r.amount),
+                "customerMobile": r.payment.payer_mobile,
+                "createdAt": r.created_at.isoformat(),
+                "status": r.status,
+=======
         # date range
         start_d, end_d, end_plus, err = _parse_dates(request)
         if err:
@@ -2065,10 +2226,86 @@ class SummaryReportView(APIView):
                 "closingBalance": _two_dp(closing_balance),
                 "serviceName": getattr(p, "slab", "UPI INTENT"),
                 "details": {},  # you can fill this if you have extra info
+>>>>>>> origin/main
             })
 
         return Response({
             "Statuscode": 1,
+<<<<<<< HEAD
+            "Message": "Refund Dashboard",
+            "summary": {
+                "refundAmount": f"{refund_amount:.2f}",
+                "refundCount": refund_count,
+            },
+            "rows": rows
+        }, status=status.HTTP_200_OK)
+
+class MainDashboardView(APIView):
+    def get(self, request):
+        client_id = request.headers.get("X-Client-Id")
+        secret_key = request.headers.get("X-Client-Secret")
+
+        if not client_id or not secret_key:
+            return Response({"statusCode": 0, "message": "Missing credentials"}, status=400)
+
+        api_key, merchant = _authenticate_api_client(client_id, secret_key)
+        if not merchant:
+            return Response({"statusCode": 0, "message": "Invalid credentials"}, status=401)
+
+        payments = Payment.objects.filter(merchant=merchant)
+
+        total_txn = payments.count()
+        success = payments.filter(status="success").count()
+        failed = payments.filter(status="failed").count()
+        pending = payments.filter(status="pending").count()
+
+        total_amount = payments.aggregate(total=Coalesce(Sum("amount"), Decimal("0.00")))["total"]
+
+        latest = payments.order_by("-created_at")[:5]
+
+        latest_list = []
+        for p in latest:
+            latest_list.append({
+                "orderId": p.order_id,
+                "amount": str(p.amount),
+                "status": p.status,
+                "date": p.created_at
+            })
+
+        return Response({
+            "statusCode": 1,
+            "message": "Main Dashboard Data",
+            "data": {
+                "totalTransactions": total_txn,
+                "success": success,
+                "failed": failed,
+                "pending": pending,
+                "totalAmount": str(total_amount)
+            },
+            "latestTransactions": latest_list
+        }, status=200)
+
+
+class UpdateMerchantProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request):
+        user = request.user
+
+        try:
+            merchant = Merchant.objects.get(user=user)
+        except Merchant.DoesNotExist:
+            return Response({"message": "Merchant not found"}, status=404)
+
+        merchant.business_address = request.data.get('business_address', merchant.business_address)
+        merchant.pincode = request.data.get('pincode', merchant.pincode)
+
+        merchant.save()
+
+        return Response({"message": "Profile updated successfully"})
+
+
+=======
             "Message": "Summary Report",
             "summary": {
                 "totalDebit": total_debit,
@@ -2081,3 +2318,4 @@ class SummaryReportView(APIView):
             "count": len(rows),
             "rows": rows,
         }, status=status.HTTP_200_OK)
+>>>>>>> origin/main
