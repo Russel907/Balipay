@@ -21,6 +21,9 @@ from rest_framework.response import Response
 from rest_framework import status, generics, permissions
 from rest_framework.authtoken.models import Token
 from rest_framework import serializers
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from gateway.models import Merchant
 
 from decimal import Decimal, InvalidOperation
 from .utils import send_otp_via_messagecentral
@@ -31,6 +34,8 @@ from .utils import _get_auth_token, MESSAGECENTRAL_BASE
 from .models import Merchant, Payment, OTP, APIKey, Refund
 from .serializers import MerchantSignupSerializer, MerchantLoginSerializer, SendOTPSerializer, VerifyOTPSerializer, GenerateAPIKeySerializer, APIKeyListSerializer, PaymentSerializer 
 from .razorpay_client import create_razorpay_order
+
+
 
 logger = logging.getLogger(__name__)
 WEBHOOK_TOLERANCE_SECONDS = 5 * 60
@@ -1563,3 +1568,24 @@ class MainDashboardView(APIView):
             },
             "latestTransactions": latest_list
         }, status=200)
+
+
+class UpdateMerchantProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request):
+        user = request.user
+
+        try:
+            merchant = Merchant.objects.get(user=user)
+        except Merchant.DoesNotExist:
+            return Response({"message": "Merchant not found"}, status=404)
+
+        merchant.business_address = request.data.get('business_address', merchant.business_address)
+        merchant.pincode = request.data.get('pincode', merchant.pincode)
+
+        merchant.save()
+
+        return Response({"message": "Profile updated successfully"})
+
+

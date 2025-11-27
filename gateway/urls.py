@@ -1,14 +1,15 @@
 from django.urls import path
 from .views import MerchantSignupView, MerchantLoginView, CreatePaymentView, SendOTPView, ValidateOTPView,  APIKeyListView
 from .views import GenerateAPIKeyView, RevokeAPIKeyView, ListPaymentOrdersView, CancelPaymentOrderView, CreateDeepLinkView, CreateQRCodeView
-from .views import CollectPayView, CheckOrderStatusView, DashboardView, DashboardV2View, RefundDashboardView, MainDashboardView
-
+from .views import CollectPayView, CheckOrderStatusView, DashboardView, DashboardV2View, RefundDashboardView, MainDashboardView, UpdateMerchantProfileView
 
 
 
 urlpatterns = [
     path('signup/merchant/', MerchantSignupView.as_view(), name='merchant-signup'),
     path('merchant/login/', MerchantLoginView.as_view(), name='merchant-login'),
+    path('merchant/update-profile/', UpdateMerchantProfileView.as_view(), name='update-profile'),
+
 
     path("otp/send/", SendOTPView.as_view(), name="otp-send"),
     path("otp/verify/", ValidateOTPView.as_view(), name="otp-verify"),
@@ -29,7 +30,7 @@ urlpatterns = [
     path("api/payin/dashboard2", DashboardV2View.as_view(), name="payin-dashboard2"),
     path("api/payin/refunds/", RefundDashboardView.as_view(), name="refund-dashboard"),
     path("api/dashboard/", MainDashboardView.as_view(), name="main-dashboard"),
-
+    
 
 
 ]

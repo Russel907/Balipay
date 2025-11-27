@@ -64,6 +64,9 @@ class MerchantSignupSerializer(serializers.ModelSerializer):
             entity_type=validated_data.get("entity_type"),
             business_address=validated_data.get("business_address", ""),
             pincode=validated_data.get("pincode", ""),
+            gst_file = validated_data.get("gst_file"),
+            pan_file = validated_data.get("pan_file"),
+            signatory_file = validated_data.get("signatory_file"),
             is_active=False,
         )
 
@@ -158,3 +161,14 @@ class PaymentSerializer(serializers.ModelSerializer):
         except Exception:
             raise serializers.ValidationError("Invalid amount")
         return value
+
+class MerchantUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Merchant
+        fields = [
+            "business_name",
+            "contact_name",
+            "phone_number",
+            "business_address",
+            "pincode",
+        ]
