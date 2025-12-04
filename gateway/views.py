@@ -32,6 +32,13 @@ from .models import Merchant, Payment, OTP, APIKey, Refund
 from .serializers import MerchantSignupSerializer, MerchantLoginSerializer, SendOTPSerializer, VerifyOTPSerializer, GenerateAPIKeySerializer, APIKeyListSerializer, PaymentSerializer 
 from .razorpay_client import create_razorpay_order
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from .ocr_utils import ocr_extract_text
+import re
+
+
 logger = logging.getLogger(__name__)
 WEBHOOK_TOLERANCE_SECONDS = 5 * 60
 REPLAY_CACHE_PREFIX = "wh_sig_"
@@ -1797,3 +1804,71 @@ class GSTSignatoryView(APIView):
         result = get_gst_signatory(gstnumber)
         return Response(result)
 
+
+class PanImageVerifyView(APIView):
+    def post(self, request):
+        file = request.FILES.get("file")
+
+        if not file:
+            return Response({"error": "File is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        ocr_result = ocr_extract_text(file)
+
+        parsed = ocr_result.get("ParsedResults")
+
+        if not parsed or len(parsed) == 0:
+            return Response({
+                "error": "OCR did not return text",
+                "raw_response": ocr_result
+            }, status=500)
+
+        extracted_text = parsed[0].get("ParsedText", "")
+
+        pan_pattern = r"[A-Z]{5}[0-9]{4}[A-Z]"
+        match = re.search(pan_pattern, extracted_text)
+
+        return Response({
+            "ocr_text": extracted_text,
+            "pan_found": match.group(0) if match else None
+        })
+
+import re
+
+def extract_gstin(text):
+    import re
+    pattern = r'\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9][A-Z][A-Z]\b'
+    match = re.search(pattern, text)
+    return match.group(0) if match else None
+
+class GstImageVerifyView(APIView):
+    def post(self, request):
+        try:
+            image_file = request.FILES.get("image")
+            if not image_file:
+                return Response({"error": "No image uploaded"}, status=400)
+
+            url = "https://api.ocr.space/parse/image"
+            payload = {
+                "apikey": "helloworld",
+                "language": "eng",
+                "OCREngine": 2
+            }
+            files = {"file": (image_file.name, image_file.read())}
+
+            response = requests.post(url, data=payload, files=files)
+            ocr_data = response.json()
+
+            parsed_text = ""
+            if "ParsedResults" in ocr_data:
+                parsed_text = ocr_data["ParsedResults"][0].get("ParsedText", "")
+
+            # Extract GSTIN from text
+            gstin = extract_gstin(parsed_text)
+
+            return Response({
+                "ocr_text": parsed_text,
+                "gst_found": gstin
+            })
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)

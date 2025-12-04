@@ -158,3 +158,6 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+OCR_SPACE_API_KEY = "K81977066488957"   
+OCR_SPACE_URL = "https://api.ocr.space/parse/image"

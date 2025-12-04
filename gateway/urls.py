@@ -4,6 +4,7 @@ from .views import GenerateAPIKeyView, RevokeAPIKeyView, ListPaymentOrdersView, 
 from .views import CollectPayView, CheckOrderStatusView, DashboardView, DashboardV2View, RefundDashboardView, MainDashboardView, UpdateMerchantProfileView
 from .views import ForgotPasswordView, ResetPasswordView
 from gateway.views import VerifyPANView, VerifyGSTView, GSTSignatoryView
+from .views import PanImageVerifyView, GstImageVerifyView
 
 
 urlpatterns = [
@@ -45,4 +46,10 @@ urlpatterns += [
     path("kyc/pan/verify/", VerifyPANView.as_view(), name="kyc-pan-verify"),
     path("kyc/gst/verify/", VerifyGSTView.as_view(), name="kyc-gst-verify"),
     path("kyc/gst/signatory/", GSTSignatoryView.as_view(), name="kyc-gst-signatory"),
+]
+
+
+urlpatterns += [
+    path("kyc/pan/image-verify/", PanImageVerifyView.as_view()),
+    path("kyc/gst/image-verify/", GstImageVerifyView.as_view()),
 ]
