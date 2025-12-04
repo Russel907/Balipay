@@ -1756,3 +1756,44 @@ class ResetPasswordView(APIView):
         user.set_password(new_password)
         user.save()
         return Response({"message": "Password reset successful"})
+
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from .kyc_utils import verify_pan
+
+
+class VerifyPANView(APIView):
+    def post(self, request):
+        pan = request.data.get("pan")
+        if not pan:
+            return Response({"error": "PAN is required"}, status=400)
+
+        result = verify_pan(pan)
+        return Response(result, status=200)
+
+
+from .kyc_utils import verify_gst
+from .kyc_utils import get_gst_signatory
+
+
+class VerifyGSTView(APIView):
+    def post(self, request):
+        gstnumber = request.data.get("gstnumber")
+        if not gstnumber:
+            return Response({"error": "gstnumber missing"}, status=400)
+
+        result = verify_gst(gstnumber)
+        return Response(result)
+
+
+class GSTSignatoryView(APIView):
+    def post(self, request):
+        gstnumber = request.data.get("gstnumber")
+        if not gstnumber:
+            return Response({"error": "gstnumber missing"}, status=400)
+
+        result = get_gst_signatory(gstnumber)
+        return Response(result)
+

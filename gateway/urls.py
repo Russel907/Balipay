@@ -3,7 +3,7 @@ from .views import MerchantSignupView, MerchantLoginView, CreatePaymentView, Sen
 from .views import GenerateAPIKeyView, RevokeAPIKeyView, ListPaymentOrdersView, CancelPaymentOrderView, CreateDeepLinkView, CreateQRCodeView, PaymentsDashboardView
 from .views import CollectPayView, CheckOrderStatusView, DashboardView, DashboardV2View, RefundDashboardView, MainDashboardView, UpdateMerchantProfileView
 from .views import ForgotPasswordView, ResetPasswordView
-
+from gateway.views import VerifyPANView, VerifyGSTView, GSTSignatoryView
 
 
 urlpatterns = [
@@ -33,12 +33,16 @@ urlpatterns = [
     path("api/payin/refunds/", RefundDashboardView.as_view(), name="refund-dashboard"),
     path("api/dashboard/", MainDashboardView.as_view(), name="main-dashboard"),
 
-
-
 ]
 
 
 urlpatterns += [
     path('forgot-password/', ForgotPasswordView.as_view()),
     path('reset-password/', ResetPasswordView.as_view()),
+]
+
+urlpatterns += [
+    path("kyc/pan/verify/", VerifyPANView.as_view(), name="kyc-pan-verify"),
+    path("kyc/gst/verify/", VerifyGSTView.as_view(), name="kyc-gst-verify"),
+    path("kyc/gst/signatory/", GSTSignatoryView.as_view(), name="kyc-gst-signatory"),
 ]
