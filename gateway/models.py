@@ -236,3 +236,26 @@ class PasswordResetOTP(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     otp = models.CharField(max_length=6)
     created_at = models.DateTimeField(auto_now_add=True)
+
+class EncryptedPaymentKey(models.Model):
+    merchant = models.ForeignKey(
+        "Merchant",
+        on_delete=models.CASCADE,
+        related_name="payment_keys",
+        null=True,
+        blank=True,
+    )
+    name = models.CharField(max_length=100)  # e.g. "razorpay_secret"
+    encrypted_value = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def set_value(self, raw_value: str):
+        from .encryption_utils import encrypt_value
+        self.encrypted_value = encrypt_value(raw_value)
+
+    def get_value(self) -> str:
+        from .encryption_utils import decrypt_value
+        return decrypt_value(self.encrypted_value)
+
+    def __str__(self):
+        return f"{self.name} (merchant={self.merchant_id})"

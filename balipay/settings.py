@@ -161,3 +161,10 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 OCR_SPACE_API_KEY = "K81977066488957"   
 OCR_SPACE_URL = "https://api.ocr.space/parse/image"
+
+
+
+ENCRYPTION_KEY = os.environ.get(
+    "ENCRYPTION_KEY",
+    "8kvBNJiU4IBTqTIJ2gSYahe71OpFPRI4_7k_TQRGfU8="  
+)

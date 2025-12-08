@@ -5,6 +5,8 @@ from .views import CollectPayView, CheckOrderStatusView, DashboardView, Dashboar
 from .views import ForgotPasswordView, ResetPasswordView
 from gateway.views import VerifyPANView, VerifyGSTView, GSTSignatoryView
 from .views import PanImageVerifyView, GstImageVerifyView
+from .views import WebhookAPIView
+from .views import TestEncryptKeyView
 
 
 urlpatterns = [
@@ -33,6 +35,8 @@ urlpatterns = [
     path("api/payin/dashboard2", DashboardV2View.as_view(), name="payin-dashboard2"),
     path("api/payin/refunds/", RefundDashboardView.as_view(), name="refund-dashboard"),
     path("api/dashboard/", MainDashboardView.as_view(), name="main-dashboard"),
+    path("webhook/", WebhookAPIView.as_view()),
+
 
 ]
 
@@ -52,4 +56,9 @@ urlpatterns += [
 urlpatterns += [
     path("kyc/pan/image-verify/", PanImageVerifyView.as_view()),
     path("kyc/gst/image-verify/", GstImageVerifyView.as_view()),
+]
+
+
+urlpatterns += [
+    path("kyc/test-encrypted-key/", TestEncryptKeyView.as_view()),
 ]

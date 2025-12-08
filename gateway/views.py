@@ -38,6 +38,22 @@ from rest_framework import status
 from .ocr_utils import ocr_extract_text
 import re
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from .kyc_utils import verify_pan
+
+import random
+from django.contrib.auth.models import User
+from .models import PasswordResetOTP
+from rest_framework.decorators import APIView
+
+from .kyc_utils import verify_gst
+from .kyc_utils import get_gst_signatory
 
 logger = logging.getLogger(__name__)
 WEBHOOK_TOLERANCE_SECONDS = 5 * 60
@@ -1731,10 +1747,6 @@ class MainDashboardView(APIView):
             "latestTransactions": latest_list
         }, status=200)
 
-import random
-from django.contrib.auth.models import User
-from .models import PasswordResetOTP
-from rest_framework.decorators import APIView
 
 class ForgotPasswordView(APIView):
     def post(self, request):
@@ -1765,11 +1777,6 @@ class ResetPasswordView(APIView):
         return Response({"message": "Password reset successful"})
 
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from .kyc_utils import verify_pan
-
 
 class VerifyPANView(APIView):
     def post(self, request):
@@ -1779,10 +1786,6 @@ class VerifyPANView(APIView):
 
         result = verify_pan(pan)
         return Response(result, status=200)
-
-
-from .kyc_utils import verify_gst
-from .kyc_utils import get_gst_signatory
 
 
 class VerifyGSTView(APIView):
@@ -1872,3 +1875,32 @@ class GstImageVerifyView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+
+
+class WebhookAPIView(APIView):
+    def post(self, request):
+        data = request.data
+        print("Webhook received:", data)   # log data
+        return Response({"message": "Webhook received", "data": data}, status=status.HTTP_200_OK)
+
+
+from .models import EncryptedPaymentKey
+from .encryption_utils import encrypt_value, decrypt_value
+
+class TestEncryptKeyView(APIView):
+    def post(self, request):
+        raw_key = request.data.get("key")
+        if not raw_key:
+            return Response({"error": "key is required"}, status=400)
+
+        obj = EncryptedPaymentKey(name="test_key")
+        obj.set_value(raw_key)
+        obj.save()
+
+        decrypted = obj.get_value()
+
+        return Response({
+            "stored_id": obj.id,
+            "encrypted_value": obj.encrypted_value,
+            "decrypted_value": decrypted,
+        })
