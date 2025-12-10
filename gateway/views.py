@@ -41,6 +41,8 @@ import re
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework_simplejwt.tokens import RefreshToken
+
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -54,6 +56,7 @@ from rest_framework.decorators import APIView
 
 from .kyc_utils import verify_gst
 from .kyc_utils import get_gst_signatory
+
 
 logger = logging.getLogger(__name__)
 WEBHOOK_TOLERANCE_SECONDS = 5 * 60
@@ -94,11 +97,24 @@ class MerchantLoginView(APIView):
             merchant = serializer.validated_data['merchant']
             token, _ = Token.objects.get_or_create(user=user)
             token_key = token.key
+            # data = {
+            #     "id": merchant.id,
+            #     "business_name": merchant.business_name,
+            #     "contact_name": merchant.contact_name,
+            #     "token": token_key,
+            # }
+            # return Response(data, status=status.HTTP_200_OK)
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            refresh_token = str(refresh)
+
             data = {
                 "id": merchant.id,
                 "business_name": merchant.business_name,
                 "contact_name": merchant.contact_name,
-                "token": token_key,
+                "token": token_key,          # old token
+                "access": access_token,      # new JWT token
+                "refresh": refresh_token,    # new JWT refresh token
             }
             return Response(data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
