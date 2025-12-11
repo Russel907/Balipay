@@ -30,13 +30,15 @@ from urllib.parse import urlencode
 from .utils import _get_auth_token, MESSAGECENTRAL_BASE 
 
 from .models import Merchant, Payment, OTP, APIKey, Refund
-from .serializers import MerchantSignupSerializer, MerchantLoginSerializer, SendOTPSerializer, VerifyOTPSerializer, GenerateAPIKeySerializer, APIKeyListSerializer, PaymentSerializer 
+from .serializers import MerchantSignupSerializer, MerchantLoginSerializer, SendOTPSerializer, VerifyOTPSerializer, GenerateAPIKeySerializer, APIKeyListSerializer, PaymentSerializer, MerchantSerializer, MerchantProfileUpdateSerializer, ForgotPasswordSerializer, ForgotPasswordConfirmSerializer
 from .razorpay_client import create_razorpay_order
+from django.contrib.auth.models import User
 
 logger = logging.getLogger(__name__)
 WEBHOOK_TOLERANCE_SECONDS = 5 * 60
 REPLAY_CACHE_PREFIX = "wh_sig_"
 REPLAY_CACHE_TTL = 10 * 60
+
 
 RESEND_COOLDOWN_SECONDS = getattr(settings, "RESEND_COOLDOWN_SECONDS", 60)
 OTP_TTL_SECONDS = getattr(settings, "OTP_TTL_SECONDS", 5 * 60)
@@ -62,6 +64,11 @@ class MerchantSignupView(generics.CreateAPIView):
             },
             status=status.HTTP_201_CREATED
         )
+
+
+class MerchantListView(generics.ListAPIView):
+    queryset = Merchant.objects.all()
+    serializer_class = MerchantSerializer
 
 
 class MerchantLoginView(APIView):
@@ -121,6 +128,173 @@ class MerchantLoginView(APIView):
             "expires_at": otp_obj.expires_at,
             "message": "OTP sent to registered mobile number."
         }, status=status.HTTP_201_CREATED)
+
+
+class MerchantProfileView(generics.RetrieveUpdateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = MerchantProfileUpdateSerializer
+
+    def get_object(self):
+        merchant = getattr(self.request.user, "merchant_profile", None)
+        if not merchant:
+            from rest_framework.exceptions import NotFound
+            raise NotFound("Merchant profile not found.")
+        return merchant
+
+
+class ForgotPasswordRequestView(generics.GenericAPIView):
+    serializer_class = ForgotPasswordSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data = request.data)
+        serializer.is_valid(raise_exception = True)
+        print("data : ", request.data)
+
+        email = serializer.validated_data["email"]
+        user = User.objects.filter(email__iexact=email).first()
+        print("data : ", user, email)
+
+        if not user:
+            return Response(
+                {"detail": "If an account exists for this email, an OTP has been sent."},
+                status=status.HTTP_200_OK,
+            )
+
+        merchant = getattr(user, "merchant_profile", "None")
+        print("data :", merchant, merchant.phone_number)
+        if not merchant or merchant.phone_number:
+            return Response(
+                {"detail": "If an account exists for this email, an OTP has been sent."},
+                status=status.HTTP_200_OK,
+            )
+
+        last_otp = (
+            merchant.otp.filter(purpose = OTP.PURPOSE_PASSWORD_RESET).order_by("create_at").first()
+        )
+
+        if last_otp and (timezone.now - last_otp("created_at")).total_seconds < RESEND_COOLDOWN_SECONDS:
+            retry_after = RESEND_COOLDOWN_SECONDS - ini(
+                (timezone.now() - last_otp.created_at).total_seconds()
+            )
+            return Response(
+                {
+                    "detail": "Please wait before requesting another OTP.",
+                    "retry_after_seconds": retry_after,
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        otp_obj = OTP.create_otp(
+            merchant=merchant,
+            ttl_seconds=OTP_TTL_SECONDS,
+            purpose=OTP.PURPOSE_PASSWORD_RESET,
+        )
+
+        sms_text = f"Your password reset code is {otp_obj.code}. It will expire in {OTP_TTL_SECONDS // 60} minutes."
+
+        # You already have send_otp_via_messagecentral or send_sms
+        ok, provider_resp = send_otp_via_messagecentral(merchant.phone_number, sms_text)
+
+        if not ok:
+            otp_obj.delete()
+            return Response(
+                {"detail": "Failed to send OTP. Try again later."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # store provider IDs if you want
+        data = provider_resp.get("data") if isinstance(provider_resp, dict) else None
+        if data:
+            otp_obj.provider_verification_id = data.get("verificationId")
+            otp_obj.provider_transaction_id = data.get("transactionId")
+            otp_obj.save()
+
+        return Response(
+                {
+                    "detail": "If an account exists for this email, an OTP has been sent.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+
+class ForgotPasswordConfirmView(generics.GenericAPIView):
+    serializer_class = ForgotPasswordConfirmSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+        otp_code = serializer.validated_data["otp_code"]
+        new_password = serializer.validated_data["new_password"]
+
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            return Response(
+                {"detail": "Invalid OTP or email."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        merchant = getattr(user, "merchant_profile", None)
+        if not merchant:
+            return Response(
+                {"detail": "Invalid OTP or email."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        otp_obj = (
+            merchant.otps
+            .filter(
+                purpose=OTP.PURPOSE_PASSWORD_RESET,
+                code=otp_code,
+                consumed=False,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+
+        if not otp_obj:
+            return Response(
+                {"detail": "Invalid OTP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Check attempts
+        if otp_obj.attempts >= MAX_OTP_ATTEMPTS:
+            return Response(
+                {"detail": "Maximum attempts exceeded."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Increment attempts first
+        otp_obj.attempts = otp_obj.attempts + 1
+        otp_obj.save()
+
+        # Check expiry / consumed
+        if otp_obj.is_expired():
+            return Response(
+                {"detail": "OTP expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # If everything ok, mark OTP consumed and reset password
+        with transaction.atomic():
+            otp_obj.consumed = True
+            otp_obj.save()
+
+            user.set_password(new_password)
+            user.save(update_fields=["password"])
+
+            # Invalidate existing auth tokens
+            Token.objects.filter(user=user).delete()
+            new_token = Token.objects.create(user=user)
+
+        return Response(
+            {
+                "detail": "Password reset successful.",
+                "token": new_token.key,  # optional – lets user log in immediately
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class SendOTPView(generics.GenericAPIView):
@@ -1195,6 +1369,113 @@ class CreateRefundView(APIView):
 
 
 
+@method_decorator(csrf_exempt, name="dispatch")
+class RazorpayWebhookView(APIView):
+    """
+    Public endpoint Razorpay will POST to. Verify signature and process events.
+    - Expects header: X-Razorpay-Signature
+    - Uses settings.RAZORPAY_WEBHOOK_SECRET for verification (set this in your PA settings)
+    """
+
+    def post(self, request, *args, **kwargs):
+        body = request.body  # raw bytes
+        sig_header = request.META.get("HTTP_X_RAZORPAY_SIGNATURE") or request.META.get("HTTP_X_RAZORPAY_SIGNATURE".lower())
+        if not sig_header:
+            logger.warning("Webhook received without signature header")
+            return Response({"detail": "Signature header missing"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # get secret from settings (recommended). Alternatively, if you store per-merchant webhook_secret,
+        # you can verify after inspecting the payload, but most gateways sign using a single shared secret.
+        webhook_secret = getattr(settings, "RAZORPAY_WEBHOOK_SECRET", None)
+        if not webhook_secret:
+            logger.error("RAZORPAY_WEBHOOK_SECRET not configured in settings")
+            return Response({"detail": "Webhook not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # verify signature using razorpay utility (you already have `client`)
+        try:
+            client.utility.verify_webhook_signature(body, sig_header, webhook_secret)
+        except Exception as exc:
+            logger.exception("Razorpay webhook signature verification failed")
+            return Response({"detail": "Invalid signature"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # parse json safely
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except Exception:
+            logger.exception("Failed to parse webhook JSON")
+            return Response({"detail": "Invalid JSON"}, status=status.HTTP_400_BAD_REQUEST)
+
+        event = payload.get("event")
+        logger.info("Razorpay webhook event received: %s", event)
+
+        # --- handle specific events ---
+        try:
+            # Payment events: payload['payload']['payment']['entity']
+            if event and event.startswith("payment."):
+                payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
+                provider_payment_id = payment_entity.get("id")
+                provider_order_id = payment_entity.get("order_id")
+                # find matching Payment by provider ids (order or payment)
+                qs = Payment.objects.filter(
+                    Q(provider_payment_id=provider_payment_id) |
+                    Q(provider_order_id=provider_order_id)
+                )
+                payment_obj = qs.first()  # may be None if not present
+
+                # update stored provider response for debugging
+                if payment_obj:
+                    payment_obj.provider_payment_response = payment_entity
+                    # map events to your statuses
+                    if event == "payment.captured":
+                        payment_obj.status = Payment.STATUS_PAID
+                        payment_obj.paid_at = timezone.now()
+                    elif event == "payment.failed":
+                        payment_obj.status = Payment.STATUS_FAILED
+                    elif event == "payment.authorized":
+                        payment_obj.status = Payment.STATUS_ATTEMPTED
+                    elif event == "payment.dispute.created":
+                        # optional: mark disputed or record in another model
+                        pass
+                    # save the object
+                    payment_obj.save(update_fields=["status", "provider_payment_response", "paid_at", "updated_at"])
+                    logger.info("Updated Payment(id=%s) status -> %s", payment_obj.id, payment_obj.status)
+                else:
+                    # no matching payment in DB — you may want to store the payload for later reconciliation
+                    logger.warning("Webhook payment event but no Payment found for order_id=%s payment_id=%s",
+                                   provider_order_id, provider_payment_id)
+
+            # Refund events
+            elif event and event.startswith("refund."):
+                refund_entity = payload.get("payload", {}).get("refund", {}).get("entity", {})
+                provider_refund_id = refund_entity.get("id")
+                # attempt to correlate to a Refund object via provider_refund_id or payment id
+                refund_obj = Refund.objects.filter(provider_refund_id=provider_refund_id).first()
+                if refund_obj:
+                    if event == "refund.processed" or event == "refund.completed":
+                        refund_obj.status = Refund.STATUS_PROCESSED
+                    elif event == "refund.failed":
+                        refund_obj.status = Refund.STATUS_FAILED
+                    refund_obj.provider_refund_response = refund_entity
+                    refund_obj.save(update_fields=["status", "provider_refund_response", "updated_at"])
+                    logger.info("Updated Refund(id=%s) status -> %s", refund_obj.id, refund_obj.status)
+                else:
+                    logger.warning("Refund webhook received but no Refund found for id=%s", provider_refund_id)
+
+            else:
+                # catch-all: log unknown events
+                logger.info("Unhandled webhook event type: %s. Payload saved for inspection.", event)
+                # Optionally persist the raw payload to DB for later inspection
+
+        except Exception:
+            logger.exception("Error processing webhook payload")
+            return Response({"detail": "Processing error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Reply 200 quickly so gateway knows we handled it
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
+
+
+
+
 def _two_dp(x: Decimal | None) -> str:
     if x is None:
         return "0.00"
@@ -1986,7 +2267,6 @@ class OrdersDashboardView(APIView):
 #             "count": qs.count(),
 #             "rows": rows
 #         }, status=status.HTTP_200_OK)
-
 
 
 class SummaryReportView(APIView):

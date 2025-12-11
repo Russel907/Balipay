@@ -23,16 +23,30 @@ class Merchant(models.Model):
     business_address = models.TextField(blank=True, null=True)
     pincode = models.CharField(max_length=10, blank=True, null=True)
     webhook_secret = models.CharField(max_length=128, blank=True, null=True)
-    is_active = models.BooleanField(default=False)  # becomes True after OTP verification
+    gst_file = models.FileField(upload_to="merchant_docs/gst/", null=True, blank=True)
+    pan_file = models.FileField(upload_to="merchant_docs/pan/", null=True, blank=True)
+    signatory_file = models.FileField(upload_to="merchant_docs/signatory/", null=True, blank=True)
+    is_active = models.BooleanField(default=False)  
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return self.business_name or self.contact_name or self.email and self.token
 
+
 class OTP(models.Model):
+    PURPOSE_LOGIN = "login"
+    PURPOSE_PHONE_VERIFY = "phone_verify"
+    PURPOSE_PASSWORD_RESET = "password_reset"
+
+    PURPOSE_CHOICES = [
+        (PURPOSE_LOGIN, "Login"),
+        (PURPOSE_PHONE_VERIFY, "Phone Verification"),
+        (PURPOSE_PASSWORD_RESET, "Password Reset"),
+    ]
     merchant = models.ForeignKey("Merchant", on_delete=models.CASCADE, related_name="otps")
     code = models.CharField(max_length=6)
+    purpose = models.CharField(max_length=32, choices=PURPOSE_CHOICES, default=PURPOSE_LOGIN)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     attempts = models.PositiveSmallIntegerField(default=0)
@@ -59,6 +73,7 @@ class OTP(models.Model):
         return cls.objects.create(
             merchant=merchant,
             code=code,
+            purpose=purpose,
             expires_at=now + timedelta(seconds=ttl_seconds),
             attempts=0,
             consumed=False,

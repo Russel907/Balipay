@@ -7,11 +7,31 @@ from rest_framework.authtoken.models import Token
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from .models import Merchant, Payment, ENTITY_TYPE_CHOICES, OTP, APIKey
-
+from django.contrib.auth import get_user_model
+User = get_user_model()
 
 
 phone_validator = RegexValidator(r'^\+?\d{7,15}$', 'Enter a valid phone number (7-15 digits, optional +).')
 pincode_validator = RegexValidator(r'^\d{4,6}$', 'Enter a valid pincode (4-6 digits).')
+
+
+class MerchantSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Merchant
+        fields = [
+            "id",
+            "webhook_secret",
+            "gst_file",
+            "pan_file",
+            "signatory_file",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "gst_file",
+            "pan_file",
+            "signatory_file"
+            # ❌ no "token" here
+        ]
 
 
 class MerchantSignupSerializer(serializers.ModelSerializer):
@@ -20,6 +40,9 @@ class MerchantSignupSerializer(serializers.ModelSerializer):
     entity_type = serializers.ChoiceField(choices=ENTITY_TYPE_CHOICES)
     email = serializers.EmailField(write_only=True)
     password = serializers.CharField(write_only=True, min_length=8)
+    gst_file = serializers.FileField(required=False)
+    pan_file = serializers.FileField(required=False)
+    signatory_file = serializers.FileField(required=False)
 
     class Meta:
         model = Merchant
@@ -32,6 +55,9 @@ class MerchantSignupSerializer(serializers.ModelSerializer):
             "pincode",
             "email",
             "password",
+            "gst_file",
+            "pan_file",
+            "signatory_file",
         ]
 
     def validate_email(self, value):
@@ -57,6 +83,9 @@ class MerchantSignupSerializer(serializers.ModelSerializer):
             entity_type=validated_data.get("entity_type"),
             business_address=validated_data.get("business_address", ""),
             pincode=validated_data.get("pincode", ""),
+            gst_file=validated_data.get("gst_file"),
+            pan_file=validated_data.get("pan_file"),
+            signatory_file=validated_data.get("signatory_file"),
             is_active=False,
         )
 
@@ -70,6 +99,9 @@ class MerchantSignupSerializer(serializers.ModelSerializer):
         rep = super().to_representation(instance)
         rep["email"] = instance.user.email
         rep["token"] = instance.token
+        rep["gst"] = instance.gst_file
+        rep["pan"]= instance.pan_file
+        rep["signatory"] = instance.signatory_file
         return rep
 
 
@@ -90,6 +122,66 @@ class MerchantLoginSerializer(serializers.Serializer):
 
         attrs["user"] = user
         attrs["merchant"] = merchant
+        return attrs
+
+
+class MerchantProfileUpdateSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(source="user.email", required=False)
+
+    class Meta:
+        model = Merchant
+        fields = [
+            "business_name",
+            "contact_name",
+            "phone_number",
+            "business_address",
+            "pincode",
+            "gst_file",
+            "pan_file",
+            "signatory_file",
+            "email",
+        ]
+        read_only_fields = ["phone_number"]  # set files read-only if you handle them specially
+
+    def update(self, instance, validated_data):
+        user_data = validated_data.pop("user", None)
+        if user_data:
+            new_email = user_data.get("email")
+            if new_email and new_email.lower() != instance.user.email.lower():
+                if User.objects.filter(email__iexact=new_email).exists():
+                    raise serializers.ValidationError({"email": "Email already in use."})
+                instance.user.email = new_email
+                instance.user.username = new_email  # if you use email as username
+                instance.user.save(update_fields=["email", "username"])
+                # optionally mark email as unverified here and trigger verification
+
+        for attr, val in validated_data.items():
+            setattr(instance, attr, val)
+        instance.save()
+        return instance
+
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        return value
+
+
+class ForgotPasswordConfirmSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    otp_code = serializers.CharField(max_length=6)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_otp_code(self, value):
+        if not value.isdigit() or len(value) != 6:
+            raise serializers.ValidationError("OTP must be six digit")
+        return value
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "passwords do not match."})
         return attrs
 
 
