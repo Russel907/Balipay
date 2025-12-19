@@ -57,6 +57,12 @@ from rest_framework.decorators import APIView
 from .kyc_utils import verify_gst
 from .kyc_utils import get_gst_signatory
 
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from gateway.models import Merchant
+from .models import EncryptedPaymentKey
+from .encryption_utils import encrypt_value, decrypt_value
 
 logger = logging.getLogger(__name__)
 WEBHOOK_TOLERANCE_SECONDS = 5 * 60
@@ -68,8 +74,6 @@ OTP_TTL_SECONDS = getattr(settings, "OTP_TTL_SECONDS", 5 * 60)
 MAX_OTP_ATTEMPTS = getattr(settings, "MAX_OTP_ATTEMPTS", 5)
 
 client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
-
-
 
 class MerchantSignupView(generics.CreateAPIView):
     serializer_class = MerchantSignupSerializer
@@ -156,10 +160,6 @@ class MerchantLoginView(APIView):
             "message": "OTP sent to registered mobile number."
         }, status=status.HTTP_201_CREATED)
 
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from gateway.models import Merchant
 
 class UpdateMerchantProfileView(APIView):
     permission_classes = [IsAuthenticated]
@@ -732,7 +732,7 @@ class CreateDeepLinkView(APIView):
         note = d.get("note")
         order_id = d.get("OrderId")
 
-        # ✅ Identify missing fields
+        # Identify missing fields
         missing = []
         if not client_id:
             missing.append("clientId")
@@ -750,7 +750,7 @@ class CreateDeepLinkView(APIView):
                 "missingFields": missing
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ Authenticate API Client
+        # Authenticate API Client
         api_key, merchant = _authenticate_api_client(client_id, secret_key)
         if not api_key or not merchant:
             return Response({
@@ -758,7 +758,7 @@ class CreateDeepLinkView(APIView):
                 "message": "Invalid API credentials"
             }, status=status.HTTP_401_UNAUTHORIZED)
 
-        # ✅ Check if payment order exists
+        # Check if payment order exists
         try:
             payment = Payment.objects.get(merchant=merchant, order_id=order_id)
         except Payment.DoesNotExist:
@@ -768,7 +768,7 @@ class CreateDeepLinkView(APIView):
                 "orderId": order_id
             }, status=status.HTTP_404_NOT_FOUND)
 
-        # ✅ Fail if provider order not created (create payment first)
+        # Fail if provider order not created (create payment first)
         if not payment.provider_order_id:
             return Response({
                 "statusCode": 0,
@@ -776,7 +776,7 @@ class CreateDeepLinkView(APIView):
                 "orderId": order_id
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ Amount for UPI
+        #  Amount for UPI
         amount = payment.amount
         vpa = payment.vpa or getattr(merchant, "upi_id", "")
 
@@ -804,12 +804,12 @@ class CreateDeepLinkView(APIView):
             f"&tr={payment.provider_order_id}"
         )
 
-        # ✅ Save deeplink if model has the field (optional)
+        #  Save deeplink if model has the field (optional)
         if hasattr(payment, "upi_link"):
             payment.upi_link = upi_url
             payment.save(update_fields=["upi_link"])
 
-        # ✅ Response
+        # Response
         return Response({
             "statusCode": 1,
             "Message": "Deeplink Generated Successfully",
@@ -873,7 +873,7 @@ class CollectPayView(APIView):
         customer_vpa = d.get("vpa")
         order_id = d.get("OrderId")
 
-        # ✅ Required fields validation (detailed)
+        # Required fields validation (detailed)
         missing = []
         if not client_id: missing.append("clientId")
         if not secret_key: missing.append("secretKey")
@@ -887,7 +887,7 @@ class CollectPayView(APIView):
                 "missingFields": missing
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ Authenticate API credentials
+        # Authenticate API credentials
         api_key, merchant = _authenticate_api_client(client_id, secret_key)
         if not api_key or not merchant:
             return Response({
@@ -895,7 +895,7 @@ class CollectPayView(APIView):
                 "message": "Invalid API credentials"
             }, status=status.HTTP_401_UNAUTHORIZED)
 
-        # ✅ Check payment exists
+        # Check payment exists
         try:
             payment = Payment.objects.get(merchant=merchant, order_id=order_id)
         except Payment.DoesNotExist:
@@ -905,7 +905,7 @@ class CollectPayView(APIView):
                 "orderId": order_id
             }, status=status.HTTP_404_NOT_FOUND)
 
-        # ✅ Cannot collect pay for cancelled/paid orders
+        # Cannot collect pay for cancelled/paid orders
         if payment.status in ["cancelled", "failed", "paid"]:
             return Response({
                 "statusCode": 0,
@@ -913,7 +913,7 @@ class CollectPayView(APIView):
                 "orderId": order_id
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ Required fields for collect pay
+        # Required fields for collect pay
         amount = str(payment.amount)
         merchant_vpa = payment.vpa or getattr(merchant, "phone_number", None)
         merchant_name = merchant.business_name or merchant.contact_name
@@ -925,7 +925,7 @@ class CollectPayView(APIView):
                 "orderId": order_id
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ Generate Collect Pay Request UPI Intent URI (UPI 2.0 collect)
+        # Generate Collect Pay Request UPI Intent URI (UPI 2.0 collect)
         collect_uri = (
             f"upi://pay?"
             f"pa={merchant_vpa}"
@@ -939,11 +939,11 @@ class CollectPayView(APIView):
             f"&mc=0000"
         )
 
-        # ✅ Dummy Transaction ID + RRN (you generate internally)
+        # Dummy Transaction ID + RRN (you generate internally)
         vpa_txn_id = f"vpa_txn_{payment.id}"
         rrn = f"rrn_{payment.id}"
 
-        # ✅ Response format matching CashBell
+        # Response format matching CashBell
         return Response({
             "statusCode": 1,
             "message": "Collect Pay Generated Successfully",
@@ -965,7 +965,7 @@ class CheckOrderStatusView(APIView):
         secret_key = d.get("secretKey")
         order_id = d.get("OrderId")
 
-        # ✅ required validation
+        # required validation
         missing = []
         if not client_id: missing.append("clientId")
         if not secret_key: missing.append("secretKey")
@@ -978,7 +978,7 @@ class CheckOrderStatusView(APIView):
                 "missingFields": missing
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ Authenticate
+        # Authenticate
         api_key, merchant = _authenticate_api_client(client_id, secret_key)
         if not api_key or not merchant:
             return Response({
@@ -986,7 +986,7 @@ class CheckOrderStatusView(APIView):
                 "message": "Invalid API credentials"
             }, status=status.HTTP_401_UNAUTHORIZED)
 
-        # ✅ Fetch payment order
+        # Fetch payment order
         try:
             payment = Payment.objects.get(merchant=merchant, order_id=order_id)
         except Payment.DoesNotExist:
@@ -996,7 +996,7 @@ class CheckOrderStatusView(APIView):
                 "orderId": order_id
             }, status=status.HTTP_404_NOT_FOUND)
 
-        # ✅ If DB already has payment ID → final status
+        # If DB already has payment ID → final status
         if payment.provider_payment_id:
             return Response({
                 "statusCode": 1,
@@ -1010,7 +1010,7 @@ class CheckOrderStatusView(APIView):
                 "updatedAt": payment.updated_at.isoformat()
             }, status=status.HTTP_200_OK)
 
-        # ✅ If still pending — OPTIONAL Razorpay order status fetch
+        # If still pending — OPTIONAL Razorpay order status fetch
         provider_order_id = payment.provider_order_id
         if not provider_order_id:
             return Response({
@@ -1019,7 +1019,7 @@ class CheckOrderStatusView(APIView):
                 "orderId": order_id
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ Call Razorpay (optional enhancement)
+        # Call Razorpay (optional enhancement)
         try:
             import razorpay
             client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
@@ -1029,7 +1029,7 @@ class CheckOrderStatusView(APIView):
         except Exception:
             items = []
 
-        # ✅ If payment exists in Razorpay
+        # If payment exists in Razorpay
         if items:
             payment_item = items[0]
             payment.provider_payment_id = payment_item["id"]
@@ -1037,7 +1037,7 @@ class CheckOrderStatusView(APIView):
             payment.paid_at = timezone.now()
             payment.save(update_fields=["provider_payment_id", "status", "paid_at", "updated_at"])
 
-        # ✅ RESPONSE
+        # RESPONSE
         return Response({
             "statusCode": 1,
             "message": "Order status fetched",
@@ -1107,6 +1107,141 @@ def _parse_dates(request):
     # end is inclusive for UI, exclusive (+1 day) for ORM
     end_plus = end + timedelta(days=1)
     return start, end, end_plus, None
+
+class VerifyPaymentView(APIView):
+    """
+    POST /payments/verify/
+    Body:
+      clientId
+      secretKey
+      orderId
+      providerPaymentId
+    """
+
+    def post(self, request):
+        d = request.data
+
+        client_id = d.get("clientId")
+        secret_key = d.get("secretKey")
+        order_id = d.get("orderId")
+        provider_payment_id = d.get("providerPaymentId")
+
+        # validation
+        missing = []
+        if not client_id: missing.append("clientId")
+        if not secret_key: missing.append("secretKey")
+        if not order_id: missing.append("orderId")
+        if not provider_payment_id: missing.append("providerPaymentId")
+
+        if missing:
+            return Response(
+                {"statusCode": 0, "message": f"Missing fields: {', '.join(missing)}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # authenticate
+        api_key, merchant = _authenticate_api_client(client_id, secret_key)
+        if not api_key or not merchant:
+            return Response(
+                {"statusCode": 0, "message": "Invalid API credentials"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # fetch payment
+        try:
+            payment = Payment.objects.get(merchant=merchant, order_id=order_id)
+        except Payment.DoesNotExist:
+            return Response(
+                {"statusCode": 0, "message": "Order not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # update payment
+        payment.provider_payment_id = provider_payment_id
+        payment.status = "paid"
+        payment.paid_at = timezone.now()
+        payment.save(update_fields=["provider_payment_id", "status", "paid_at", "updated_at"])
+
+        return Response(
+            {
+                "statusCode": 1,
+                "message": "Payment verified successfully",
+                "orderId": order_id,
+                "providerPaymentId": provider_payment_id,
+                "status": payment.status,
+            },
+            status=status.HTTP_200_OK
+        )
+
+class InitiateRefundView(APIView):
+    """
+    POST /refunds/initiate/
+    Body:
+      clientId
+      secretKey
+      orderId
+      amount
+      reason
+    """
+
+    def post(self, request):
+        d = request.data
+
+        client_id = d.get("clientId")
+        secret_key = d.get("secretKey")
+        order_id = d.get("orderId")
+        amount = d.get("amount")
+        reason = d.get("reason", "")
+
+        missing = []
+        if not client_id: missing.append("clientId")
+        if not secret_key: missing.append("secretKey")
+        if not order_id: missing.append("orderId")
+        if not amount: missing.append("amount")
+
+        if missing:
+            return Response(
+                {"statusCode": 0, "message": f"Missing fields: {', '.join(missing)}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # authenticate
+        api_key, merchant = _authenticate_api_client(client_id, secret_key)
+        if not api_key or not merchant:
+            return Response(
+                {"statusCode": 0, "message": "Invalid API credentials"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # fetch payment
+        try:
+            payment = Payment.objects.get(merchant=merchant, order_id=order_id)
+        except Payment.DoesNotExist:
+            return Response(
+                {"statusCode": 0, "message": "Order not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # create refund
+        refund = Refund.objects.create(
+            payment=payment,
+            amount=amount,
+            reason=reason,
+            status="initiated",
+        )
+
+        return Response(
+            {
+                "statusCode": 1,
+                "message": "Refund initiated successfully",
+                "refundId": refund.id,
+                "orderId": order_id,
+                "amount": str(refund.amount),
+                "status": refund.status,
+            },
+            status=status.HTTP_201_CREATED
+        )
+
 
 
 class DashboardView(APIView):
@@ -1851,7 +1986,6 @@ class PanImageVerifyView(APIView):
             "pan_found": match.group(0) if match else None
         })
 
-import re
 
 def extract_gstin(text):
     import re
@@ -1898,10 +2032,6 @@ class WebhookAPIView(APIView):
         data = request.data
         print("Webhook received:", data)   # log data
         return Response({"message": "Webhook received", "data": data}, status=status.HTTP_200_OK)
-
-
-from .models import EncryptedPaymentKey
-from .encryption_utils import encrypt_value, decrypt_value
 
 class TestEncryptKeyView(APIView):
     def post(self, request):

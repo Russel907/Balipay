@@ -1,13 +1,14 @@
 from rest_framework import serializers
+from rest_framework.authtoken.models import Token
+
 from django.contrib.auth.hashers import check_password
 from decimal import Decimal, InvalidOperation
 from django.core.validators import RegexValidator
 from django.utils import timezone
-from rest_framework.authtoken.models import Token
+
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from .models import Merchant, Payment, ENTITY_TYPE_CHOICES, OTP, APIKey
-
 
 
 phone_validator = RegexValidator(r'^\+?\d{7,15}$', 'Enter a valid phone number (7-15 digits, optional +).')
