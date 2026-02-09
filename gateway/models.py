@@ -66,8 +66,20 @@ class OTP(models.Model):
     def generate_code(cls):
         return f"{secrets.randbelow(1000000):06d}"
 
+    # @classmethod
+    # def create_otp(cls, merchant, ttl_seconds=600):
+    #     code = cls.generate_code()
+    #     now = timezone.now()
+    #     return cls.objects.create(
+    #         merchant=merchant,
+    #         code=code,
+    #         purpose=purpose,
+    #         expires_at=now + timedelta(seconds=ttl_seconds),
+    #         attempts=0,
+    #         consumed=False,
+    #     )
     @classmethod
-    def create_otp(cls, merchant, ttl_seconds=600):
+    def create_otp(cls, merchant, ttl_seconds=600, purpose=PURPOSE_LOGIN):
         code = cls.generate_code()
         now = timezone.now()
         return cls.objects.create(

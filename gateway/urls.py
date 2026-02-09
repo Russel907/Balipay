@@ -5,7 +5,7 @@ from .views import MerchantSignupView, MerchantLoginView, CreatePaymentView, Sen
 from .views import GenerateTestAPIKeyView, RevokeAPIKeyView, ListPaymentOrdersView, CancelPaymentOrderView, CreateDeepLinkView
 from .views import CollectPayView, CheckOrderStatusView, DashboardView, DashboardV2View, PaymentsDashboardView, OrdersDashboardView
 from .views import CreateRefundView, RefundsDashboardView, SummaryReportView, GenerateLiveAPIKeyView, MerchantListView, MerchantProfileView
-from .views import ForgotPasswordRequestView, ForgotPasswordConfirmView, RazorpayWebhookView
+from .views import ForgotPasswordRequestView, ForgotPasswordConfirmView, RazorpayWebhookView, PhonePeWebhookView, PhonePeRedirectView
 
 
 urlpatterns = [
@@ -41,6 +41,9 @@ urlpatterns = [
     path("payin/dashboard/refunds/", RefundsDashboardView.as_view()),
     path("payin/dashboard/orders/", OrdersDashboardView.as_view()),
     # path("payin/dashboard/disputes/", DisputesDashboardView.as_view())
-    path("payin/dashboard/summary/", SummaryReportView.as_view())
+    path("payin/dashboard/summary/", SummaryReportView.as_view()),
+    path("v1/payments/phonepe/webhook/", PhonePeWebhookView.as_view(),name="phonepe-webhook"),
+    path("v1/payments/phonepe/redirect/", PhonePeRedirectView.as_view(),name="phonepe-redirect"),
+
 
 ]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

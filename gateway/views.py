@@ -33,6 +33,8 @@ from .models import Merchant, Payment, OTP, APIKey, Refund
 from .serializers import MerchantSignupSerializer, MerchantLoginSerializer, SendOTPSerializer, VerifyOTPSerializer, GenerateAPIKeySerializer, APIKeyListSerializer, PaymentSerializer, MerchantSerializer, MerchantProfileUpdateSerializer, ForgotPasswordSerializer, ForgotPasswordConfirmSerializer
 from .razorpay_client import create_razorpay_order
 from django.contrib.auth.models import User
+from .phonepe_client import create_phonepe_payment
+
 
 logger = logging.getLogger(__name__)
 WEBHOOK_TOLERANCE_SECONDS = 5 * 60
@@ -44,7 +46,7 @@ RESEND_COOLDOWN_SECONDS = getattr(settings, "RESEND_COOLDOWN_SECONDS", 60)
 OTP_TTL_SECONDS = getattr(settings, "OTP_TTL_SECONDS", 5 * 60)
 MAX_OTP_ATTEMPTS = getattr(settings, "MAX_OTP_ATTEMPTS", 5)
 
-client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+# client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
 
 
 
@@ -565,10 +567,10 @@ def _authenticate_api_client(client_id: str, secret_key: str):
 
     return api_key, api_key.merchant
 
-
 class CreatePaymentView(APIView):
     def post(self, request):
         d = request.data
+
         client_id = d.get('clientId')
         secret_key = d.get('secretKey')
         client_order_id = d.get('clientOrderId')
@@ -578,27 +580,54 @@ class CreatePaymentView(APIView):
         email = d.get('emailID')
         vpa = d.get('vpa')
 
-        # required check
+        # -------------------------------
+        # Required fields check
+        # -------------------------------
         if not all([client_id, secret_key, client_order_id, amount, name, mobile, email]):
-            return Response({"Statuscode": 0, "Message": "Missing required fields"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"Statuscode": 0, "Message": "Missing required fields"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # authenticate API client
+        # -------------------------------
+        # Authenticate API client
+        # -------------------------------
         api_key, merchant = _authenticate_api_client(client_id, secret_key)
         if not api_key or not merchant:
-            return Response({"Statuscode": 0, "Message": "Invalid API credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response(
+                {"Statuscode": 0, "Message": "Invalid API credentials"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
-        # normalize and validate amount
+        # -------------------------------
+        # Validate amount
+        # -------------------------------
         try:
             amount_dec = Decimal(str(amount))
             if amount_dec <= 0:
-                return Response({"Statuscode": 0, "Message": "amount must be > 0"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"Statuscode": 0, "Message": "amount must be > 0"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             amount_str = f"{amount_dec:.2f}"
             amount_in_paise = int((amount_dec * 100).to_integral_value())
-            if amount_in_paise <= 0:
-                return Response({"Statuscode": 0, "Message": "amount must be at least 0.01"}, status=status.HTTP_400_BAD_REQUEST)
-        except (InvalidOperation, TypeError):
-            return Response({"Statuscode": 0, "Message": "amount must be numeric"}, status=status.HTTP_400_BAD_REQUEST)
 
+            if amount_in_paise <= 0:
+                return Response(
+                    {"Statuscode": 0, "Message": "amount must be at least 0.01"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        except (InvalidOperation, TypeError):
+            return Response(
+                {"Statuscode": 0, "Message": "amount must be numeric"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # -------------------------------
+        # Create / Fetch Payment
+        # -------------------------------
         try:
             with transaction.atomic():
                 payment, created = Payment.objects.select_for_update().get_or_create(
@@ -606,121 +635,141 @@ class CreatePaymentView(APIView):
                     order_id=client_order_id,
                     defaults={
                         "amount": amount_str,
-                        "vpa": vpa or getattr(merchant, "upi_id", "") or "",
-                        "status": "pending",
+                        "vpa": vpa or "",
+                        "status": Payment.STATUS_PENDING,
                         "payer_name": name,
                         "payer_mobile": mobile,
                         "payer_email": email,
                     }
                 )
 
-                # if existing payment has different amount -> conflict
+                # Duplicate order with different amount
                 if not created and str(payment.amount) != amount_str:
-                    return Response({
-                        "Statuscode": 0,
-                        "Message": "Duplicate clientOrderId with mismatched amount",
-                        "orderId": payment.order_id,
-                        "currency": getattr(payment, "currency", "INR"),
-                        "amount": str(payment.amount),
-                        "clientOrderId": client_order_id
-                    }, status=status.HTTP_409_CONFLICT)
-
-                # If provider order was already created for this payment, reuse it (idempotency)
-                razorpay_order_response = None
-                if getattr(payment, "provider_order_id", None):
-                    razorpay_order_id = payment.provider_order_id
-                    razorpay_order_response = {
-                        "id": razorpay_order_id,
-                        "note": "reused existing provider order",
-                    }
-                else:
-                    # create provider order using PLATFORM credentials (do NOT use merchant-supplied razorpay creds)
-                    auth = (settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
-                    idempotency_key = f"platform:{merchant.id}:{client_order_id}"
-
-                    notes = {
-                        "merchant_id": str(merchant.id),
-                        "client_order_id": client_order_id
-                    }
-
-                    # call helper that tries SDK then HTTP (and sets Idempotency-Key)
-                    razorpay_order_response = create_razorpay_order(
-                        auth=auth,
-                        amount_in_paise=amount_in_paise,
-                        receipt=client_order_id,
-                        notes=notes,
-                        idempotency_key=idempotency_key
+                    return Response(
+                        {
+                            "Statuscode": 0,
+                            "Message": "Duplicate clientOrderId with mismatched amount",
+                            "orderId": payment.order_id,
+                            "amount": str(payment.amount),
+                        },
+                        status=status.HTTP_409_CONFLICT
                     )
 
-                    razorpay_order_id = razorpay_order_response.get("id")
-                    if razorpay_order_id:
-                        # persist provider order info onto Payment (preferred fields)
-                        # set provider_order_id and other helpful fields
-                        payment.provider_order_id = razorpay_order_id
-                        # store raw response if JSONField exists
-                        try:
-                            payment.provider_order_response = razorpay_order_response
-                        except Exception:
-                            # if JSONField not present, ignore
-                            logger.debug("provider_order_response field not available on Payment model")
-                        # cache numeric paise and currency
-                        try:
-                            payment.amount_in_paise = amount_in_paise
-                            payment.currency = "INR"
-                        except Exception:
-                            logger.debug("amount_in_paise/currency fields not available on Payment model")
-                        # store idempotency key for debugging
-                        try:
-                            payment.idempotency_key = idempotency_key
-                        except Exception:
-                            logger.debug("idempotency_key field not available on Payment model")
+                # ======================================================
+                # RAZORPAY (COMMENTED OUT – TEMPORARILY DISABLED)
+                # ======================================================
+                # if not payment.provider_order_id:
+                #     auth = (settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
+                #     idempotency_key = f"platform:{merchant.id}:{client_order_id}"
+                #
+                #     notes = {
+                #         "merchant_id": str(merchant.id),
+                #         "client_order_id": client_order_id
+                #     }
+                #
+                #     razorpay_order_response = create_razorpay_order(
+                #         auth=auth,
+                #         amount_in_paise=amount_in_paise,
+                #         receipt=client_order_id,
+                #         notes=notes,
+                #         idempotency_key=idempotency_key
+                #     )
+                #
+                #     razorpay_order_id = razorpay_order_response.get("id")
+                #
+                #     payment.provider_order_id = razorpay_order_id
+                #     payment.provider_order_response = razorpay_order_response
+                #     payment.amount_in_paise = amount_in_paise
+                #     payment.currency = "INR"
+                #
+                #     payment.save(update_fields=[
+                #         "provider_order_id",
+                #         "provider_order_response",
+                #         "amount_in_paise",
+                #         "currency",
+                #         "updated_at",
+                #     ])
 
-                        # keep backward-compatible provider_txn_id if present
-                        if hasattr(payment, "provider_txn_id"):
-                            payment.provider_txn_id = razorpay_order_id
+                # ======================================================
+                # PHONEPE (ACTIVE)
+                # ======================================================
+                transaction_id = client_order_id  # reuse order id
+              
+                phonepe_payload = {
+                    "merchantId": settings.PHONEPE_MERCHANT_ID,
+                    "merchantTransactionId": transaction_id,
+                    "merchantUserId": str(merchant.id),
+                    "amount": amount_in_paise,
+                    "redirectUrl": settings.PHONEPE_REDIRECT_URL,
+                    "redirectMode": "POST",
+                    "callbackUrl": settings.PHONEPE_WEBHOOK_URL,
+                    "paymentInstrument": {
+                        "type": "PAY_PAGE"
+                    }
+                }
 
-                        # Save all available fields in one go (collect fields that exist)
-                        update_fields = ["provider_order_id", "updated_at"]
-                        if hasattr(payment, "provider_order_response"):
-                            update_fields.append("provider_order_response")
-                        if hasattr(payment, "amount_in_paise"):
-                            update_fields.append("amount_in_paise")
-                        if hasattr(payment, "currency"):
-                            update_fields.append("currency")
-                        if hasattr(payment, "idempotency_key"):
-                            update_fields.append("idempotency_key")
-                        if hasattr(payment, "provider_txn_id"):
-                            update_fields.append("provider_txn_id")
 
-                        payment.save(update_fields=list(dict.fromkeys(update_fields)))
+                # phonepe_resp = create_phonepe_payment(phonepe_payload)
+                sdk_resp = create_phonepe_sdk_order(
+                    merchant_order_id=transaction_id,
+                    amount_in_paise=amount_in_paise
+                )
+                ui_token = sdk_resp.get("token")
+                payment.provider_order_id = sdk_resp.get("orderId")
+                payment.provider_order_response = sdk_resp
+                payment.amount_in_paise = amount_in_paise
+                payment.currency = "INR"
+
+
+                # payment.provider_order_id = transaction_id
+                # payment.provider_order_response = phonepe_resp
+                # payment.amount_in_paise = amount_in_paise
+                # payment.currency = "INR"
+
+                payment.save(update_fields=[
+                    "provider_order_id",
+                    "provider_order_response",
+                    "amount_in_paise",
+                    "currency",
+                    "updated_at",
+                ])
 
         except Exception as exc:
-            logger.exception("CreatePaymentView failed while creating payment/provider order: %s", exc)
-            return Response({"Statuscode": 0, "Message": "Failed to create provider order"}, status=status.HTTP_502_BAD_GATEWAY)
+            logger.exception(
+                "CreatePaymentView failed while creating payment: %s",
+                exc
+            )
+            return Response(
+                {"Statuscode": 0, "Message": "Failed to create payment"},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
 
-        # Build response (include provider block)
-        provider_block = {
-            "provider_name": "razorpay",
-            "order_id": getattr(payment, "provider_order_id", None) or getattr(payment, "provider_txn_id", None),
-            "order_response": None
-        }
-        # Prefer stored JSONField; else use local response variable
-        if hasattr(payment, "provider_order_response") and payment.provider_order_response:
-            provider_block["order_response"] = payment.provider_order_response
-        else:
-            provider_block["order_response"] = razorpay_order_response
-
-        response = {
-            "Statuscode": 1,
-            "Message": "Order Generated" if created else "Order Retrieved",
-            "orderId": payment.order_id,
-            "currency": getattr(payment, "currency", "INR"),
-            "amount": amount_str,
-            "clientOrderId": client_order_id,
-            # "provider": provider_block
-        }
-        return Response(response, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
-
+        # -------------------------------
+        # Final Response
+        # -------------------------------
+        # return Response(
+        #     {
+        #         "Statuscode": 1,
+        #         "Message": "Order Generated" if created else "Order Retrieved",
+        #         "orderId": payment.order_id,
+        #         "clientOrderId": client_order_id,
+        #         "amount": amount_str,
+        #         "currency": "INR",
+        #     },
+        #     status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        # )
+        return Response(
+            {
+                "Statuscode": 1,
+                "Message": "SDK Order Created",
+                "orderId": payment.provider_order_id,
+                "clientOrderId": client_order_id,
+                "amount": amount_str,
+                "currency": "INR",
+                "phonepeToken": ui_token
+            },
+            status=status.HTTP_201_CREATED
+        )
 
 class ListPaymentOrdersView(APIView):
 
@@ -2361,3 +2410,95 @@ class SummaryReportView(APIView):
             "count": len(rows),
             "rows": rows,
         }, status=status.HTTP_200_OK)
+
+class PhonePeWebhookView(APIView):
+
+    def post(self, request):
+        response_b64 = request.data.get("response")
+
+        if not response_b64:
+            return Response({"detail": "Missing response"}, status=400)
+
+        try:
+            decoded = json.loads(
+                base64.b64decode(response_b64).decode()
+            )
+        except Exception:
+            return Response({"detail": "Invalid response payload"}, status=400)
+
+        transaction_id = decoded.get("transactionId")
+        state = decoded.get("state")
+
+        if not transaction_id:
+            return Response({"detail": "transactionId missing"}, status=400)
+
+        try:
+            payment = Payment.objects.get(provider_order_id=transaction_id)
+        except Payment.DoesNotExist:
+            return Response({"detail": "Payment not found"}, status=404)
+
+        if state == "COMPLETED":
+            payment.status = Payment.STATUS_PAID
+            payment.paid_at = timezone.now()
+        elif state == "FAILED":
+            payment.status = Payment.STATUS_FAILED
+        else:
+            payment.status = Payment.STATUS_PENDING
+
+        payment.provider_payment_response = decoded
+        payment.save(update_fields=[
+            "status",
+            "provider_payment_response",
+            "paid_at",
+            "updated_at"
+        ])
+
+        return Response({"status": "ok"}, status=200)
+
+class PhonePeRedirectView(APIView):
+
+    def post(self, request):
+        response_b64 = request.data.get("response")
+
+        if not response_b64:
+            return Response({"detail": "Missing response"}, status=400)
+
+        try:
+            decoded = json.loads(
+                base64.b64decode(response_b64).decode()
+            )
+        except Exception:
+            return Response({"detail": "Invalid response payload"}, status=400)
+
+        transaction_id = decoded.get("transactionId")
+        state = decoded.get("state")
+
+        if not transaction_id:
+            return Response({"detail": "transactionId missing"}, status=400)
+
+        try:
+            payment = Payment.objects.get(provider_order_id=transaction_id)
+        except Payment.DoesNotExist:
+            return Response({"detail": "Payment not found"}, status=404)
+
+        if state == "COMPLETED":
+            payment.status = Payment.STATUS_PAID
+            payment.paid_at = timezone.now()
+        elif state == "FAILED":
+            payment.status = Payment.STATUS_FAILED
+        else:
+            payment.status = Payment.STATUS_PENDING
+
+        payment.provider_payment_response = decoded
+        payment.save(update_fields=[
+            "status",
+            "provider_payment_response",
+            "paid_at",
+            "updated_at"
+        ])
+
+        return Response({
+            "message": "Payment processed",
+            "orderId": payment.order_id,
+            "status": payment.status
+        }, status=200)

@@ -155,3 +155,21 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # pythonanywhere
 # username:Razal
 # password:Kaiztren@123
+
+# ===============================
+# PhonePe Payment Gateway
+# ===============================
+
+PHONEPE_CLIENT_ID = os.getenv("PHONEPE_CLIENT_ID")
+PHONEPE_CLIENT_SECRET = os.getenv("PHONEPE_CLIENT_SECRET")
+PHONEPE_CLIENT_VERSION = os.getenv("PHONEPE_CLIENT_VERSION", "1")
+
+PHONEPE_MERCHANT_ID = os.getenv("PHONEPE_MERCHANT_ID")
+PHONEPE_BASE_URL = os.getenv("PHONEPE_BASE_URL")
+
+# PHONEPE_REDIRECT_URL = "https://yourdomain.com/phonepe/redirect"
+# PHONEPE_WEBHOOK_URL = "https://yourdomain.com/phonepe/webhook"
+
+PHONEPE_REDIRECT_URL = os.getenv("PHONEPE_REDIRECT_URL")
+PHONEPE_WEBHOOK_URL = os.getenv("PHONEPE_WEBHOOK_URL")
+
