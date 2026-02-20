@@ -45,7 +45,7 @@ class OTP(models.Model):
         (PURPOSE_PASSWORD_RESET, "Password Reset"),
     ]
     merchant = models.ForeignKey("Merchant", on_delete=models.CASCADE, related_name="otps")
-    code = models.CharField(max_length=6)
+    code = models.CharField(max_length=4)
     purpose = models.CharField(max_length=32, choices=PURPOSE_CHOICES, default=PURPOSE_LOGIN)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
@@ -64,7 +64,7 @@ class OTP(models.Model):
 
     @classmethod
     def generate_code(cls):
-        return f"{secrets.randbelow(1000000):06d}"
+        return f"{secrets.randbelow(10000):04d}"
 
     # @classmethod
     # def create_otp(cls, merchant, ttl_seconds=600):
@@ -155,7 +155,6 @@ class APIKey(models.Model):
         return obj, raw
 
 
-
 class Payment(models.Model):
     STATUS_PENDING = 'pending'
     STATUS_PAID = 'paid'
@@ -194,6 +193,8 @@ class Payment(models.Model):
     # Raw provider data for debugging / reconciliation
     provider_order_response = models.JSONField(blank=True, null=True)   # store the order create response
     provider_payment_response = models.JSONField(blank=True, null=True) # store payment/capture responses if desired
+    provider_status_response = models.JSONField(blank=True, null=True)
+
 
     # Optional idempotency / audit fields
     idempotency_key = models.CharField(max_length=255, blank=True, null=True)

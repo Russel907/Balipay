@@ -1,7 +1,8 @@
 
-import razorpay 
+# import razorpay 
 import logging
 import requests
+import json
 import urllib.parse, qrcode, io, base64, hmac, hashlib, json, time
 from io import BytesIO
 
@@ -31,9 +32,11 @@ from .utils import _get_auth_token, MESSAGECENTRAL_BASE
 
 from .models import Merchant, Payment, OTP, APIKey, Refund
 from .serializers import MerchantSignupSerializer, MerchantLoginSerializer, SendOTPSerializer, VerifyOTPSerializer, GenerateAPIKeySerializer, APIKeyListSerializer, PaymentSerializer, MerchantSerializer, MerchantProfileUpdateSerializer, ForgotPasswordSerializer, ForgotPasswordConfirmSerializer
-from .razorpay_client import create_razorpay_order
+# from .razorpay_client import create_razorpay_order
 from django.contrib.auth.models import User
-from .phonepe_client import create_phonepe_payment
+from gateway.phonepe_client import create_phonepe_payment
+from .phonepe_client import check_phonepe_order_status, get_tsp_token
+from rest_framework.permissions import AllowAny
 
 
 logger = logging.getLogger(__name__)
@@ -164,18 +167,20 @@ class ForgotPasswordRequestView(generics.GenericAPIView):
 
         merchant = getattr(user, "merchant_profile", "None")
         print("data :", merchant, merchant.phone_number)
-        if not merchant or merchant.phone_number:
+        if not merchant or not merchant.phone_number:
+
             return Response(
                 {"detail": "If an account exists for this email, an OTP has been sent."},
                 status=status.HTTP_200_OK,
             )
 
         last_otp = (
-            merchant.otp.filter(purpose = OTP.PURPOSE_PASSWORD_RESET).order_by("create_at").first()
+            merchant.otps.filter(purpose=OTP.PURPOSE_PASSWORD_RESET).order_by("created_at").first()
+
         )
 
-        if last_otp and (timezone.now - last_otp("created_at")).total_seconds < RESEND_COOLDOWN_SECONDS:
-            retry_after = RESEND_COOLDOWN_SECONDS - ini(
+        if last_otp and (timezone.now() - last_otp.created_at).total_seconds() < RESEND_COOLDOWN_SECONDS:
+            retry_after = RESEND_COOLDOWN_SECONDS - int(
                 (timezone.now() - last_otp.created_at).total_seconds()
             )
             return Response(
@@ -185,6 +190,7 @@ class ForgotPasswordRequestView(generics.GenericAPIView):
                 },
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
+
 
         otp_obj = OTP.create_otp(
             merchant=merchant,
@@ -219,6 +225,85 @@ class ForgotPasswordRequestView(generics.GenericAPIView):
             )
 
 
+# class ForgotPasswordConfirmView(generics.GenericAPIView):
+#     serializer_class = ForgotPasswordConfirmSerializer
+
+#     def post(self, request, *args, **kwargs):
+#         serializer = self.get_serializer(data=request.data)
+#         serializer.is_valid(raise_exception=True)
+#         email = serializer.validated_data["email"]
+#         otp_code = serializer.validated_data["otp_code"]
+#         new_password = serializer.validated_data["new_password"]
+
+#         user = User.objects.filter(email__iexact=email).first()
+#         if not user:
+#             return Response(
+#                 {"detail": "Invalid OTP or email."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         merchant = getattr(user, "merchant_profile", None)
+#         if not merchant:
+#             return Response(
+#                 {"detail": "Invalid OTP or email."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         otp_obj = (
+#             merchant.otps
+#             .filter(
+#                 purpose=OTP.PURPOSE_PASSWORD_RESET,
+#                 code=otp_code,
+#                 consumed=False,
+#             )
+#             .order_by("-created_at")
+#             .first()
+#         )
+
+#         if not otp_obj:
+#             return Response(
+#                 {"detail": "Invalid OTP."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         # Check attempts
+#         if otp_obj.attempts >= MAX_OTP_ATTEMPTS:
+#             return Response(
+#                 {"detail": "Maximum attempts exceeded."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # Increment attempts first
+#         otp_obj.attempts = otp_obj.attempts + 1
+#         otp_obj.save()
+
+#         # Check expiry / consumed
+#         if otp_obj.is_expired():
+#             return Response(
+#                 {"detail": "OTP expired."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         # If everything ok, mark OTP consumed and reset password
+#         with transaction.atomic():
+#             otp_obj.consumed = True
+#             otp_obj.save()
+
+#             user.set_password(new_password)
+#             user.save(update_fields=["password"])
+
+#             # Invalidate existing auth tokens
+#             Token.objects.filter(user=user).delete()
+#             new_token = Token.objects.create(user=user)
+
+#         return Response(
+#             {
+#                 "detail": "Password reset successful.",
+#                 "token": new_token.key,  # optional – lets user log in immediately
+#             },
+#             status=status.HTTP_200_OK,
+#         )
+
 class ForgotPasswordConfirmView(generics.GenericAPIView):
     serializer_class = ForgotPasswordConfirmSerializer
 
@@ -243,11 +328,11 @@ class ForgotPasswordConfirmView(generics.GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # ✅ Find latest unconsumed OTP — don't match by code
         otp_obj = (
             merchant.otps
             .filter(
                 purpose=OTP.PURPOSE_PASSWORD_RESET,
-                code=otp_code,
                 consumed=False,
             )
             .order_by("-created_at")
@@ -256,7 +341,7 @@ class ForgotPasswordConfirmView(generics.GenericAPIView):
 
         if not otp_obj:
             return Response(
-                {"detail": "Invalid OTP."},
+                {"detail": "No active OTP found. Please request a new one."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -267,18 +352,72 @@ class ForgotPasswordConfirmView(generics.GenericAPIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Increment attempts first
-        otp_obj.attempts = otp_obj.attempts + 1
-        otp_obj.save()
-
-        # Check expiry / consumed
+        # Check expiry
         if otp_obj.is_expired():
             return Response(
-                {"detail": "OTP expired."},
+                {"detail": "OTP expired. Please request a new one."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # If everything ok, mark OTP consumed and reset password
+        # ✅ Validate via MessageCentral API
+        verification_id = otp_obj.provider_verification_id
+        if not verification_id:
+            return Response(
+                {"detail": "OTP verification not available. Please request a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        country = getattr(settings, "MESSAGECENTRAL_COUNTRY_CODE", "91")
+        customer_id = getattr(settings, "MESSAGECENTRAL_CUSTOMER_ID", "")
+
+        params = {
+            "countryCode": country,
+            "mobileNumber": merchant.phone_number,
+            "verificationId": verification_id,
+            "customerId": customer_id,
+            "code": otp_code
+        }
+
+        base = getattr(settings, "MESSAGECENTRAL_BASE", "https://cpaas.messagecentral.com")
+        validate_url = f"{base}/verification/v3/validateOtp?{urlencode(params)}"
+
+        # Get auth token
+        ok, token_or_err = _get_auth_token(country=country)
+        if not ok:
+            return Response(
+                {"detail": "Auth error. Try again later."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        headers = {"authToken": token_or_err, "Accept": "application/json"}
+
+        try:
+            resp = requests.get(validate_url, headers=headers, timeout=10)
+        except requests.RequestException:
+            return Response(
+                {"detail": "Network error. Try again later."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        try:
+            j = resp.json()
+        except ValueError:
+            j = {}
+
+        print("MessageCentral validate response:", resp.status_code, j)
+
+        # Increment attempts
+        otp_obj.attempts += 1
+        otp_obj.save()
+
+        # Check if MessageCentral says OTP is valid
+        if not (resp.status_code == 200 and j.get("message") == "SUCCESS"):
+            return Response(
+                {"detail": "Invalid OTP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ✅ OTP is valid — reset password
         with transaction.atomic():
             otp_obj.consumed = True
             otp_obj.save()
@@ -286,18 +425,16 @@ class ForgotPasswordConfirmView(generics.GenericAPIView):
             user.set_password(new_password)
             user.save(update_fields=["password"])
 
-            # Invalidate existing auth tokens
             Token.objects.filter(user=user).delete()
             new_token = Token.objects.create(user=user)
 
         return Response(
             {
                 "detail": "Password reset successful.",
-                "token": new_token.key,  # optional – lets user log in immediately
+                "token": new_token.key,
             },
             status=status.HTTP_200_OK,
         )
-
 
 class SendOTPView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -568,6 +705,7 @@ def _authenticate_api_client(client_id: str, secret_key: str):
     return api_key, api_key.merchant
 
 class CreatePaymentView(APIView):
+    
     def post(self, request):
         d = request.data
 
@@ -580,18 +718,14 @@ class CreatePaymentView(APIView):
         email = d.get('emailID')
         vpa = d.get('vpa')
 
-        # -------------------------------
         # Required fields check
-        # -------------------------------
         if not all([client_id, secret_key, client_order_id, amount, name, mobile, email]):
             return Response(
                 {"Statuscode": 0, "Message": "Missing required fields"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # -------------------------------
         # Authenticate API client
-        # -------------------------------
         api_key, merchant = _authenticate_api_client(client_id, secret_key)
         if not api_key or not merchant:
             return Response(
@@ -599,9 +733,7 @@ class CreatePaymentView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # -------------------------------
         # Validate amount
-        # -------------------------------
         try:
             amount_dec = Decimal(str(amount))
             if amount_dec <= 0:
@@ -613,160 +745,97 @@ class CreatePaymentView(APIView):
             amount_str = f"{amount_dec:.2f}"
             amount_in_paise = int((amount_dec * 100).to_integral_value())
 
-            if amount_in_paise <= 0:
-                return Response(
-                    {"Statuscode": 0, "Message": "amount must be at least 0.01"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
         except (InvalidOperation, TypeError):
             return Response(
                 {"Statuscode": 0, "Message": "amount must be numeric"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # -------------------------------
         # Create / Fetch Payment
-        # -------------------------------
         try:
             with transaction.atomic():
+
                 payment, created = Payment.objects.select_for_update().get_or_create(
                     merchant=merchant,
                     order_id=client_order_id,
                     defaults={
                         "amount": amount_str,
                         "vpa": vpa or "",
-                        "status": Payment.STATUS_PENDING,
+                        "status": Payment.STATUS_CREATED,  # ✅ Changed from PENDING
                         "payer_name": name,
                         "payer_mobile": mobile,
                         "payer_email": email,
                     }
                 )
 
-                # Duplicate order with different amount
-                if not created and str(payment.amount) != amount_str:
-                    return Response(
-                        {
-                            "Statuscode": 0,
-                            "Message": "Duplicate clientOrderId with mismatched amount",
-                            "orderId": payment.order_id,
-                            "amount": str(payment.amount),
-                        },
-                        status=status.HTTP_409_CONFLICT
-                    )
+                # Duplicate order validation
+                if not created:
+                    if str(payment.amount) != amount_str:
+                        return Response(
+                            {
+                                "Statuscode": 0,
+                                "Message": "Duplicate clientOrderId with mismatched amount",
+                                "orderId": payment.order_id,
+                            },
+                            status=status.HTTP_409_CONFLICT
+                        )
+                    # If already initiated, return existing order
+                    if payment.provider_order_id:
+                        return Response(
+                            {
+                                "Statuscode": 1,
+                                "Message": "Order already exists",
+                                "orderId": payment.provider_order_id,
+                                "clientOrderId": client_order_id,
+                                "amount": amount_str,
+                                "currency": "INR",
+                                "intentUrl": payment.provider_order_response.get("intentUrl") if payment.provider_order_response else None,
+                                "state": payment.status
+                            },
+                            status=status.HTTP_200_OK
+                        )
 
-                # ======================================================
-                # RAZORPAY (COMMENTED OUT – TEMPORARILY DISABLED)
-                # ======================================================
-                # if not payment.provider_order_id:
-                #     auth = (settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
-                #     idempotency_key = f"platform:{merchant.id}:{client_order_id}"
-                #
-                #     notes = {
-                #         "merchant_id": str(merchant.id),
-                #         "client_order_id": client_order_id
-                #     }
-                #
-                #     razorpay_order_response = create_razorpay_order(
-                #         auth=auth,
-                #         amount_in_paise=amount_in_paise,
-                #         receipt=client_order_id,
-                #         notes=notes,
-                #         idempotency_key=idempotency_key
-                #     )
-                #
-                #     razorpay_order_id = razorpay_order_response.get("id")
-                #
-                #     payment.provider_order_id = razorpay_order_id
-                #     payment.provider_order_response = razorpay_order_response
-                #     payment.amount_in_paise = amount_in_paise
-                #     payment.currency = "INR"
-                #
-                #     payment.save(update_fields=[
-                #         "provider_order_id",
-                #         "provider_order_response",
-                #         "amount_in_paise",
-                #         "currency",
-                #         "updated_at",
-                #     ])
-
-                # ======================================================
-                # PHONEPE (ACTIVE)
-                # ======================================================
-                transaction_id = client_order_id  # reuse order id
-              
-                phonepe_payload = {
-                    "merchantId": settings.PHONEPE_MERCHANT_ID,
-                    "merchantTransactionId": transaction_id,
-                    "merchantUserId": str(merchant.id),
-                    "amount": amount_in_paise,
-                    "redirectUrl": settings.PHONEPE_REDIRECT_URL,
-                    "redirectMode": "POST",
-                    "callbackUrl": settings.PHONEPE_WEBHOOK_URL,
-                    "paymentInstrument": {
-                        "type": "PAY_PAGE"
-                    }
-                }
-
-
-                # phonepe_resp = create_phonepe_payment(phonepe_payload)
-                sdk_resp = create_phonepe_sdk_order(
-                    merchant_order_id=transaction_id,
-                    amount_in_paise=amount_in_paise
+                # ✅ PHONEPE PAY API WITH CALLBACK AND REDIRECT URLs
+                phonepe_resp = create_phonepe_payment(
+                    merchant_order_id=client_order_id,
+                    amount_in_paise=amount_in_paise,
+                    callback_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/webhook/",  # ✅ Added
+                    redirect_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/redirect/"  # ✅ Added
                 )
-                ui_token = sdk_resp.get("token")
-                payment.provider_order_id = sdk_resp.get("orderId")
-                payment.provider_order_response = sdk_resp
+
+                payment.provider_order_id = phonepe_resp.get("orderId")
+                payment.provider_order_response = phonepe_resp
                 payment.amount_in_paise = amount_in_paise
                 payment.currency = "INR"
-
-
-                # payment.provider_order_id = transaction_id
-                # payment.provider_order_response = phonepe_resp
-                # payment.amount_in_paise = amount_in_paise
-                # payment.currency = "INR"
+                payment.status = Payment.STATUS_PENDING  # ✅ Update to pending after creation
 
                 payment.save(update_fields=[
                     "provider_order_id",
                     "provider_order_response",
                     "amount_in_paise",
                     "currency",
+                    "status",
                     "updated_at",
                 ])
 
         except Exception as exc:
-            logger.exception(
-                "CreatePaymentView failed while creating payment: %s",
-                exc
-            )
+            logger.exception("CreatePaymentView failed: %s", exc)
             return Response(
                 {"Statuscode": 0, "Message": "Failed to create payment"},
                 status=status.HTTP_502_BAD_GATEWAY
             )
-
-        # -------------------------------
+        
         # Final Response
-        # -------------------------------
-        # return Response(
-        #     {
-        #         "Statuscode": 1,
-        #         "Message": "Order Generated" if created else "Order Retrieved",
-        #         "orderId": payment.order_id,
-        #         "clientOrderId": client_order_id,
-        #         "amount": amount_str,
-        #         "currency": "INR",
-        #     },
-        #     status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
-        # )
         return Response(
             {
                 "Statuscode": 1,
-                "Message": "SDK Order Created",
+                "Message": "PhonePe Order Created",
                 "orderId": payment.provider_order_id,
                 "clientOrderId": client_order_id,
                 "amount": amount_str,
                 "currency": "INR",
-                "phonepeToken": ui_token
+                "intentUrl": phonepe_resp.get("intentUrl"),
+                "state": phonepe_resp.get("state")
             },
             status=status.HTTP_201_CREATED
         )
@@ -1129,98 +1198,88 @@ class CollectPayView(APIView):
 class CheckOrderStatusView(APIView):
 
     def post(self, request):
-        d = request.data
+        client_id = request.data.get("clientId")
+        secret_key = request.data.get("secretKey")
+        client_order_id = request.data.get("clientOrderId")
 
-        client_id = d.get("clientId")
-        secret_key = d.get("secretKey")
-        order_id = d.get("OrderId")
+        if not all([client_id, secret_key, client_order_id]):
+            return Response(
+                {"Statuscode": 0, "Message": "Missing required fields"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # ✅ required validation
-        missing = []
-        if not client_id: missing.append("clientId")
-        if not secret_key: missing.append("secretKey")
-        if not order_id: missing.append("orderId")
-
-        if missing:
-            return Response({
-                "statusCode": 0,
-                "message": f"Missing fields: {', '.join(missing)}",
-                "missingFields": missing
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # ✅ Authenticate
         api_key, merchant = _authenticate_api_client(client_id, secret_key)
         if not api_key or not merchant:
-            return Response({
-                "statusCode": 0,
-                "message": "Invalid API credentials"
-            }, status=status.HTTP_401_UNAUTHORIZED)
+            return Response(
+                {"Statuscode": 0, "Message": "Invalid API credentials"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
-        # ✅ Fetch payment order
         try:
-            payment = Payment.objects.get(merchant=merchant, order_id=order_id)
+            payment = Payment.objects.get(
+                merchant=merchant,
+                order_id=client_order_id
+            )
         except Payment.DoesNotExist:
-            return Response({
-                "statusCode": 0,
-                "message": "Order not found",
-                "orderId": order_id
-            }, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"Statuscode": 0, "Message": "Order not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        # ✅ If DB already has payment ID → final status
-        if payment.provider_payment_id:
-            return Response({
-                "statusCode": 1,
-                "message": "Order status fetched",
-                "orderId": order_id,
-                "providerOrderId": payment.provider_order_id,
-                "providerPaymentId": payment.provider_payment_id,
-                "status": payment.status,
-                "amount": str(payment.amount),
-                "vpa": payment.vpa,
-                "updatedAt": payment.updated_at.isoformat()
-            }, status=status.HTTP_200_OK)
-
-        # ✅ If still pending — OPTIONAL Razorpay order status fetch
-        provider_order_id = payment.provider_order_id
-        if not provider_order_id:
-            return Response({
-                "statusCode": 0,
-                "message": "Provider order not yet created",
-                "orderId": order_id
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # ✅ Call Razorpay (optional enhancement)
         try:
-            import razorpay
-            client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+            status_resp = check_phonepe_order_status(client_order_id)
+            phonepe_state = status_resp.get("state")
 
-            payments = client.order.payments(provider_order_id)
-            items = payments.get("items", [])
-        except Exception:
-            items = []
+            # ✅ INCREMENT ATTEMPTS
+            payment.attempts += 1
 
-        # ✅ If payment exists in Razorpay
-        if items:
-            payment_item = items[0]
-            payment.provider_payment_id = payment_item["id"]
-            payment.status = "paid" if payment_item["status"] == "captured" else "failed"
-            payment.paid_at = timezone.now()
-            payment.save(update_fields=["provider_payment_id", "status", "paid_at", "updated_at"])
+            # UPDATE STATUS
+            if phonepe_state == "COMPLETED":
+                payment.status = Payment.STATUS_PAID
+                payment.paid_at = timezone.now()
+            elif phonepe_state == "FAILED":
+                payment.status = Payment.STATUS_FAILED
+            elif phonepe_state == "EXPIRED":
+                payment.status = Payment.STATUS_EXPIRED
+            elif phonepe_state == "CANCELLED":
+                payment.status = Payment.STATUS_CANCELLED
+                payment.cancelled_at = timezone.now()
+            elif phonepe_state == "PENDING":
+                payment.status = Payment.STATUS_PENDING
+            elif phonepe_state == "ATTEMPTED":
+                payment.status = Payment.STATUS_ATTEMPTED
+            elif phonepe_state == "CREATED":
+                payment.status = Payment.STATUS_CREATED
+            else:
+                payment.status = Payment.STATUS_PENDING
 
-        # ✅ RESPONSE
-        return Response({
-            "statusCode": 1,
-            "message": "Order status fetched",
-            "orderId": order_id,
-            "providerOrderId": payment.provider_order_id,
-            "providerPaymentId": payment.provider_payment_id,
-            "status": payment.status,
-            "amount": str(payment.amount),
-            "vpa": payment.vpa,
-            "updatedAt": payment.updated_at.isoformat()
-        }, status=status.HTTP_200_OK)
+            payment.provider_status_response = status_resp
+            payment.save(update_fields=[
+                "status", 
+                "provider_status_response", 
+                "paid_at",
+                "cancelled_at",
+                "attempts",  # ✅ ADDED
+                "updated_at"
+            ])
 
+        except Exception as exc:
+            logger.exception("Status check failed: %s", exc)
+            return Response(
+                {"Statuscode": 0, "Message": "Failed to check status"},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
 
+        return Response(
+            {
+                "Statuscode": 1,
+                "clientOrderId": client_order_id,
+                "phonepeState": phonepe_state,
+                "dbStatus": payment.status,
+                "attempts": payment.attempts  # ✅ ADDED
+            }
+        )
+        
 class CreateRefundView(APIView):
 
     def post(self, request):
@@ -1229,298 +1288,250 @@ class CreateRefundView(APIView):
         client_id = d.get("clientId")
         secret_key = d.get("secretKey")
         order_id = d.get("OrderId")
-        amount = d.get("amount")   # optional, can be None for full refund
-        reason = d.get("reason") or ""
+        amount = d.get("amount")
+        reason = d.get("reason", "")
 
-        # ✅ Required fields validation (client/auth + order_id)
-        missing = []
-        if not client_id:
-            missing.append("clientId")
-        if not secret_key:
-            missing.append("secretKey")
-        if not order_id:
-            missing.append("orderId")
+        if not all([client_id, secret_key, order_id]):
+            return Response(
+                {"statusCode": 0, "message": "Missing required fields"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        if missing:
-            return Response({
-                "statusCode": 0,
-                "message": f"Missing required fields: {', '.join(missing)}",
-                "missingFields": missing
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # ✅ Authenticate API credentials
         api_key, merchant = _authenticate_api_client(client_id, secret_key)
         if not api_key or not merchant:
-            return Response({
-                "statusCode": 0,
-                "message": "Invalid API credentials"
-            }, status=status.HTTP_401_UNAUTHORIZED)
+            return Response(
+                {"statusCode": 0, "message": "Invalid API credentials"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
-        # ✅ Fetch payment
         try:
-            payment = Payment.objects.get(merchant=merchant, order_id=order_id)
+            payment = Payment.objects.get(
+                merchant=merchant,
+                order_id=order_id
+            )
         except Payment.DoesNotExist:
-            return Response({
-                "statusCode": 0,
-                "message": "Order not found",
-                "orderId": order_id
-            }, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"statusCode": 0, "message": "Order not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        # ✅ Basic state validations
-        if not payment.provider_payment_id:
-            return Response({
-                "statusCode": 0,
-                "message": "Payment not captured yet. Cannot refund.",
-                "orderId": order_id
-            }, status=status.HTTP_400_BAD_REQUEST)
+        if payment.status != Payment.STATUS_PAID:
+            return Response(
+                {"statusCode": 0, "message": "Only paid orders can be refunded"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        if payment.status not in [Payment.STATUS_PAID, Payment.STATUS_REFUNDED]:
-            return Response({
-                "statusCode": 0,
-                "message": f"Cannot refund a {payment.status} payment",
-                "orderId": order_id
-            }, status=status.HTTP_400_BAD_REQUEST)
+        # Refund amount
+        refund_amount = Decimal(str(amount)) if amount else payment.amount
+        
+        # Validate refund amount doesn't exceed payment
+        if refund_amount > payment.amount:
+            return Response(
+                {"statusCode": 0, "message": "Refund amount cannot exceed payment amount"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # ✅ Check total refunds already processed
+        total_refunded = Refund.objects.filter(
+            payment=payment,
+            status=Refund.STATUS_PROCESSED
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        
+        if total_refunded + refund_amount > payment.amount:
+            return Response(
+                {"statusCode": 0, "message": f"Cannot refund {refund_amount}. Already refunded {total_refunded}. Payment amount: {payment.amount}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        amount_in_paise = int(refund_amount * 100)
 
-        # ✅ Already fully refunded?
-        total_refunded = payment.refunds.filter(
-            status__in=[Refund.STATUS_PENDING, Refund.STATUS_PROCESSED]
-        ).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
-
-        payment_amount = payment.amount
-        remaining_amount = payment_amount - total_refunded
-
-        if remaining_amount <= 0:
-            return Response({
-                "statusCode": 0,
-                "message": "Payment already fully refunded",
-                "orderId": order_id
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # ✅ Determine refund amount
         try:
-            if amount is None:
-                refund_amount = remaining_amount  # full remaining refund
+            access_token = get_tsp_token()
+
+            url = "https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/refund"
+
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"O-Bearer {access_token}",
+                "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
+                "X-SOURCE": "API",
+                "X-SOURCE-CHANNEL": "web",
+                "X-MERCHANT-IP": "127.0.0.1"
+            }
+
+            payload = {
+                "merchantRefundId": f"REF-{order_id}-{int(time.time())}",
+                "originalMerchantOrderId": payment.order_id,
+                "amount": amount_in_paise,
+                "reason": reason,
+            }
+
+            resp = requests.post(url, headers=headers, json=payload, timeout=20)
+
+            if resp.status_code not in (200, 201):
+                return Response(
+                    {"statusCode": 0, "message": resp.text},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            refund_data = resp.json()
+            provider_state = refund_data.get("state")
+            
+            # COMPLETE STATE MAPPING
+            if provider_state in ["COMPLETED", "PROCESSED"]:
+                refund_status = Refund.STATUS_PROCESSED
+            elif provider_state == "FAILED":
+                refund_status = Refund.STATUS_FAILED
+            elif provider_state == "PENDING":
+                refund_status = Refund.STATUS_PENDING
             else:
-                refund_amount = Decimal(str(amount))
+                refund_status = Refund.STATUS_PENDING
 
-            if refund_amount <= 0:
-                return Response({
-                    "statusCode": 0,
-                    "message": "Refund amount must be > 0",
-                    "orderId": order_id
-                }, status=status.HTTP_400_BAD_REQUEST)
+            # Create refund record
+            refund_obj = Refund.objects.create(
+                merchant=merchant,
+                payment=payment,
+                amount=refund_amount,
+                currency="INR",
+                status=refund_status,
+                reason=reason,
+                provider_refund_id=refund_data.get("refundId"),
+                provider_refund_response=refund_data
+            )
 
-            if refund_amount > remaining_amount:
-                return Response({
-                    "statusCode": 0,
-                    "message": "Refund amount cannot exceed remaining refundable amount",
-                    "orderId": order_id,
-                    "remainingAmount": str(remaining_amount)
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-        except (InvalidOperation, TypeError):
-            return Response({
-                "statusCode": 0,
-                "message": "Refund amount must be numeric",
-                "orderId": order_id
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        amount_in_paise = int((refund_amount * 100).to_integral_value())
-
-        # ✅ Create refund row + call Razorpay inside transaction
-        try:
-            with transaction.atomic():
-                # create Refund in pending state
-                refund = Refund.objects.create(
-                    merchant=merchant,
-                    payment=payment,
-                    amount=refund_amount,
-                    currency=payment.currency,
-                    status=Refund.STATUS_PENDING,
-                    reason=reason,
-                )
-
-                # Razorpay refund API call
-                client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
-                notes = {
-                    "merchant_id": str(merchant.id),
-                    "payment_order_id": payment.order_id,
-                    "refund_id": str(refund.id),
-                }
-
-                rp_refund_resp = client.payment.refund(
-                    payment.provider_payment_id,
-                    {
-                        "amount": amount_in_paise,
-                        "notes": notes,
-                    }
-                )
-
-                provider_refund_id = rp_refund_resp.get("id")
-
-                # update refund record
-                refund.provider_refund_id = provider_refund_id
-                refund.provider_refund_response = rp_refund_resp
-                refund.status = Refund.STATUS_PROCESSED
-                refund.processed_at = timezone.now()
-                refund.save(update_fields=[
-                    "provider_refund_id",
-                    "provider_refund_response",
-                    "status",
-                    "processed_at",
-                    "updated_at",
-                ])
-
-                # mark payment as fully refunded if applicable
-                total_after = total_refunded + refund_amount
-                if total_after >= payment_amount:
+            # Only mark payment as REFUNDED if fully refunded
+            if refund_status == Refund.STATUS_PROCESSED:
+                new_total_refunded = total_refunded + refund_amount
+                
+                if new_total_refunded >= payment.amount:
                     payment.status = Payment.STATUS_REFUNDED
-                    payment.updated_at = timezone.now()
                     payment.save(update_fields=["status", "updated_at"])
 
-        except razorpay.errors.BadRequestError as e:
-            # Razorpay validation error
-            refund.status = Refund.STATUS_FAILED
-            refund.provider_refund_response = {"error": str(e)}
-            refund.save(update_fields=["status", "provider_refund_response", "updated_at"])
+        except Exception as exc:
+            logger.exception("Refund failed: %s", exc)
+            return Response(
+                {"statusCode": 0, "message": "Refund failed"},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
 
-            return Response({
-                "statusCode": 0,
-                "message": "Refund request rejected by provider",
+        return Response(
+            {
+                "statusCode": 1,
+                "message": "Refund created successfully",
                 "orderId": order_id,
-                "error": str(e)
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        except Exception as exc:
-            # Generic failure
-            if "refund" in locals():
-                refund.status = Refund.STATUS_FAILED
-                refund.provider_refund_response = {"error": str(exc)}
-                refund.save(update_fields=["status", "provider_refund_response", "updated_at"])
-
-            return Response({
-                "statusCode": 0,
-                "message": "Failed to create refund",
-                "orderId": order_id
-            }, status=status.HTTP_502_BAD_GATEWAY)
-
-        # ✅ Success response
-        return Response({
-            "statusCode": 1,
-            "message": "Refund created successfully",
-            "orderId": order_id,
-            "providerPaymentId": payment.provider_payment_id,
-            "providerRefundId": refund.provider_refund_id,
-            "refundAmount": str(refund.amount),
-            "refundStatus": refund.status,
-            "currency": refund.currency,
-        }, status=status.HTTP_200_OK)
+                "refundId": refund_obj.id,
+                "providerRefundId": refund_obj.provider_refund_id,
+                "refundAmount": str(refund_amount),
+                "refundStatus": refund_status,
+                "totalRefunded": str(total_refunded + refund_amount)
+            },
+            status=status.HTTP_200_OK
+        )
 
 
+# @method_decorator(csrf_exempt, name="dispatch")
+# class RazorpayWebhookView(APIView):
+#     """
+#     Public endpoint Razorpay will POST to. Verify signature and process events.
+#     - Expects header: X-Razorpay-Signature
+#     - Uses settings.RAZORPAY_WEBHOOK_SECRET for verification (set this in your PA settings)
+#     """
 
-@method_decorator(csrf_exempt, name="dispatch")
-class RazorpayWebhookView(APIView):
-    """
-    Public endpoint Razorpay will POST to. Verify signature and process events.
-    - Expects header: X-Razorpay-Signature
-    - Uses settings.RAZORPAY_WEBHOOK_SECRET for verification (set this in your PA settings)
-    """
+#     def post(self, request, *args, **kwargs):
+#         body = request.body  # raw bytes
+#         sig_header = request.META.get("HTTP_X_RAZORPAY_SIGNATURE") or request.META.get("HTTP_X_RAZORPAY_SIGNATURE".lower())
+#         if not sig_header:
+#             logger.warning("Webhook received without signature header")
+#             return Response({"detail": "Signature header missing"}, status=status.HTTP_400_BAD_REQUEST)
 
-    def post(self, request, *args, **kwargs):
-        body = request.body  # raw bytes
-        sig_header = request.META.get("HTTP_X_RAZORPAY_SIGNATURE") or request.META.get("HTTP_X_RAZORPAY_SIGNATURE".lower())
-        if not sig_header:
-            logger.warning("Webhook received without signature header")
-            return Response({"detail": "Signature header missing"}, status=status.HTTP_400_BAD_REQUEST)
+#         # get secret from settings (recommended). Alternatively, if you store per-merchant webhook_secret,
+#         # you can verify after inspecting the payload, but most gateways sign using a single shared secret.
+#         webhook_secret = getattr(settings, "RAZORPAY_WEBHOOK_SECRET", None)
+#         if not webhook_secret:
+#             logger.error("RAZORPAY_WEBHOOK_SECRET not configured in settings")
+#             return Response({"detail": "Webhook not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # get secret from settings (recommended). Alternatively, if you store per-merchant webhook_secret,
-        # you can verify after inspecting the payload, but most gateways sign using a single shared secret.
-        webhook_secret = getattr(settings, "RAZORPAY_WEBHOOK_SECRET", None)
-        if not webhook_secret:
-            logger.error("RAZORPAY_WEBHOOK_SECRET not configured in settings")
-            return Response({"detail": "Webhook not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#         # verify signature using razorpay utility (you already have `client`)
+#         try:
+#             client.utility.verify_webhook_signature(body, sig_header, webhook_secret)
+#         except Exception as exc:
+#             logger.exception("Razorpay webhook signature verification failed")
+#             return Response({"detail": "Invalid signature"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # verify signature using razorpay utility (you already have `client`)
-        try:
-            client.utility.verify_webhook_signature(body, sig_header, webhook_secret)
-        except Exception as exc:
-            logger.exception("Razorpay webhook signature verification failed")
-            return Response({"detail": "Invalid signature"}, status=status.HTTP_400_BAD_REQUEST)
+#         # parse json safely
+#         try:
+#             payload = json.loads(body.decode("utf-8"))
+#         except Exception:
+#             logger.exception("Failed to parse webhook JSON")
+#             return Response({"detail": "Invalid JSON"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # parse json safely
-        try:
-            payload = json.loads(body.decode("utf-8"))
-        except Exception:
-            logger.exception("Failed to parse webhook JSON")
-            return Response({"detail": "Invalid JSON"}, status=status.HTTP_400_BAD_REQUEST)
+#         event = payload.get("event")
+#         logger.info("Razorpay webhook event received: %s", event)
 
-        event = payload.get("event")
-        logger.info("Razorpay webhook event received: %s", event)
+#         # --- handle specific events ---
+#         try:
+#             # Payment events: payload['payload']['payment']['entity']
+#             if event and event.startswith("payment."):
+#                 payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
+#                 provider_payment_id = payment_entity.get("id")
+#                 provider_order_id = payment_entity.get("order_id")
+#                 # find matching Payment by provider ids (order or payment)
+#                 qs = Payment.objects.filter(
+#                     Q(provider_payment_id=provider_payment_id) |
+#                     Q(provider_order_id=provider_order_id)
+#                 )
+#                 payment_obj = qs.first()  # may be None if not present
 
-        # --- handle specific events ---
-        try:
-            # Payment events: payload['payload']['payment']['entity']
-            if event and event.startswith("payment."):
-                payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
-                provider_payment_id = payment_entity.get("id")
-                provider_order_id = payment_entity.get("order_id")
-                # find matching Payment by provider ids (order or payment)
-                qs = Payment.objects.filter(
-                    Q(provider_payment_id=provider_payment_id) |
-                    Q(provider_order_id=provider_order_id)
-                )
-                payment_obj = qs.first()  # may be None if not present
+#                 # update stored provider response for debugging
+#                 if payment_obj:
+#                     payment_obj.provider_payment_response = payment_entity
+#                     # map events to your statuses
+#                     if event == "payment.captured":
+#                         payment_obj.status = Payment.STATUS_PAID
+#                         payment_obj.paid_at = timezone.now()
+#                     elif event == "payment.failed":
+#                         payment_obj.status = Payment.STATUS_FAILED
+#                     elif event == "payment.authorized":
+#                         payment_obj.status = Payment.STATUS_ATTEMPTED
+#                     elif event == "payment.dispute.created":
+#                         # optional: mark disputed or record in another model
+#                         pass
+#                     # save the object
+#                     payment_obj.save(update_fields=["status", "provider_payment_response", "paid_at", "updated_at"])
+#                     logger.info("Updated Payment(id=%s) status -> %s", payment_obj.id, payment_obj.status)
+#                 else:
+#                     # no matching payment in DB — you may want to store the payload for later reconciliation
+#                     logger.warning("Webhook payment event but no Payment found for order_id=%s payment_id=%s",
+#                                    provider_order_id, provider_payment_id)
 
-                # update stored provider response for debugging
-                if payment_obj:
-                    payment_obj.provider_payment_response = payment_entity
-                    # map events to your statuses
-                    if event == "payment.captured":
-                        payment_obj.status = Payment.STATUS_PAID
-                        payment_obj.paid_at = timezone.now()
-                    elif event == "payment.failed":
-                        payment_obj.status = Payment.STATUS_FAILED
-                    elif event == "payment.authorized":
-                        payment_obj.status = Payment.STATUS_ATTEMPTED
-                    elif event == "payment.dispute.created":
-                        # optional: mark disputed or record in another model
-                        pass
-                    # save the object
-                    payment_obj.save(update_fields=["status", "provider_payment_response", "paid_at", "updated_at"])
-                    logger.info("Updated Payment(id=%s) status -> %s", payment_obj.id, payment_obj.status)
-                else:
-                    # no matching payment in DB — you may want to store the payload for later reconciliation
-                    logger.warning("Webhook payment event but no Payment found for order_id=%s payment_id=%s",
-                                   provider_order_id, provider_payment_id)
+#             # Refund events
+#             elif event and event.startswith("refund."):
+#                 refund_entity = payload.get("payload", {}).get("refund", {}).get("entity", {})
+#                 provider_refund_id = refund_entity.get("id")
+#                 # attempt to correlate to a Refund object via provider_refund_id or payment id
+#                 refund_obj = Refund.objects.filter(provider_refund_id=provider_refund_id).first()
+#                 if refund_obj:
+#                     if event == "refund.processed" or event == "refund.completed":
+#                         refund_obj.status = Refund.STATUS_PROCESSED
+#                     elif event == "refund.failed":
+#                         refund_obj.status = Refund.STATUS_FAILED
+#                     refund_obj.provider_refund_response = refund_entity
+#                     refund_obj.save(update_fields=["status", "provider_refund_response", "updated_at"])
+#                     logger.info("Updated Refund(id=%s) status -> %s", refund_obj.id, refund_obj.status)
+#                 else:
+#                     logger.warning("Refund webhook received but no Refund found for id=%s", provider_refund_id)
 
-            # Refund events
-            elif event and event.startswith("refund."):
-                refund_entity = payload.get("payload", {}).get("refund", {}).get("entity", {})
-                provider_refund_id = refund_entity.get("id")
-                # attempt to correlate to a Refund object via provider_refund_id or payment id
-                refund_obj = Refund.objects.filter(provider_refund_id=provider_refund_id).first()
-                if refund_obj:
-                    if event == "refund.processed" or event == "refund.completed":
-                        refund_obj.status = Refund.STATUS_PROCESSED
-                    elif event == "refund.failed":
-                        refund_obj.status = Refund.STATUS_FAILED
-                    refund_obj.provider_refund_response = refund_entity
-                    refund_obj.save(update_fields=["status", "provider_refund_response", "updated_at"])
-                    logger.info("Updated Refund(id=%s) status -> %s", refund_obj.id, refund_obj.status)
-                else:
-                    logger.warning("Refund webhook received but no Refund found for id=%s", provider_refund_id)
+#             else:
+#                 # catch-all: log unknown events
+#                 logger.info("Unhandled webhook event type: %s. Payload saved for inspection.", event)
+#                 # Optionally persist the raw payload to DB for later inspection
 
-            else:
-                # catch-all: log unknown events
-                logger.info("Unhandled webhook event type: %s. Payload saved for inspection.", event)
-                # Optionally persist the raw payload to DB for later inspection
+#         except Exception:
+#             logger.exception("Error processing webhook payload")
+#             return Response({"detail": "Processing error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        except Exception:
-            logger.exception("Error processing webhook payload")
-            return Response({"detail": "Processing error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        # Reply 200 quickly so gateway knows we handled it
-        return Response({"status": "ok"}, status=status.HTTP_200_OK)
+#         # Reply 200 quickly so gateway knows we handled it
+#         return Response({"status": "ok"}, status=status.HTTP_200_OK)
 
 
 
@@ -1628,7 +1639,7 @@ class DashboardView(APIView):
         )
 
         # status groups
-        success_q = Q(status__in=["success", "paid", "completed"])
+        success_q = Q(status__in=[Payment.STATUS_PAID])
         failed_q = Q(status="failed")
         pending_q = Q(status="pending")
         cancelled_q = Q(status="cancelled")
@@ -2020,7 +2031,7 @@ class PaymentsDashboardView(APIView):
             status_q = Q()
             for s in statuses:
                 if s == "paid":
-                    status_q |= Q(status__in=["success", "paid", "completed"])
+                    status_q |= Q(status__in=[Payment.STATUS_PAID])
                 else:
                     status_q |= Q(status=s)
             qs = qs.filter(status_q)
@@ -2187,7 +2198,7 @@ class OrdersDashboardView(APIView):
             status_q = Q()
             for s in statuses:
                 if s == "paid":
-                    status_q |= Q(status__in=["success", "paid", "completed"])
+                    status_q |= Q(status__in=[Payment.STATUS_PAID])
                 else:
                     status_q |= Q(status=s)
             qs = qs.filter(status_q)
@@ -2347,7 +2358,7 @@ class SummaryReportView(APIView):
         ).order_by("created_at", "id")
 
         # you can tune these rules depending on your schema
-        credit_q = Q(status__in=["success", "paid", "completed"])
+        credit_q = Q(status__in=[Payment.STATUS_PAID])
         debit_q = Q(status__in=["refund", "refunded"])  # or whatever "debit" means for you
 
         agg = qs.aggregate(
@@ -2411,14 +2422,136 @@ class SummaryReportView(APIView):
             "rows": rows,
         }, status=status.HTTP_200_OK)
 
+# class PhonePeWebhookView(APIView):
+
+#     authentication_classes = []  # we handle auth manually
+#     # permission_classes = []
+#     permission_classes = [AllowAny]
+
+#     def post(self, request):
+
+#         # -----------------------------
+#         # 1️⃣ BASIC AUTH VERIFICATION
+#         # -----------------------------
+#         auth_header = request.headers.get("Authorization")
+
+#         if not auth_header or not auth_header.startswith("Basic "):
+#             return Response({"detail": "Unauthorized"}, status=401)
+
+#         try:
+#             import base64
+
+#             encoded_credentials = auth_header.split(" ")[1]
+#             decoded_credentials = base64.b64decode(encoded_credentials).decode()
+
+#             username, password = decoded_credentials.split(":")
+
+#             if username != settings.PHONEPE_WEBHOOK_USERNAME or password != settings.PHONEPE_WEBHOOK_PASSWORD:
+#                 return Response({"detail": "Invalid credentials"}, status=401)
+
+#         except Exception:
+#             return Response({"detail": "Invalid Authorization header"}, status=401)
+
+#         # -----------------------------
+#         # 2️⃣ DECODE RESPONSE
+#         # -----------------------------
+#         response_b64 = request.data.get("response")
+
+#         if not response_b64:
+#             return Response({"detail": "Missing response"}, status=400)
+
+#         try:
+#             decoded = json.loads(
+#                 base64.b64decode(response_b64).decode()
+#             )
+#         except Exception:
+#             return Response({"detail": "Invalid response payload"}, status=400)
+
+#         # -----------------------------
+#         # 3️⃣ EXTRACT DATA
+#         # -----------------------------
+#         transaction_id = decoded.get("transactionId")
+#         state = decoded.get("state")
+
+#         if not transaction_id:
+#             return Response({"detail": "transactionId missing"}, status=400)
+
+#         try:
+#             payment = Payment.objects.get(provider_order_id=transaction_id)
+#         except Payment.DoesNotExist:
+#             return Response({"detail": "Payment not found"}, status=404)
+
+#         # -----------------------------
+#         # 4️⃣ UPDATE STATUS
+#         # -----------------------------
+#         if state == "COMPLETED":
+#             payment.status = Payment.STATUS_PAID
+#             payment.paid_at = timezone.now()
+
+#         elif state == "FAILED":
+#             payment.status = Payment.STATUS_FAILED
+
+#         elif state == "EXPIRED":
+#             payment.status = Payment.STATUS_EXPIRED
+
+#         else:
+#             payment.status = Payment.STATUS_PENDING
+
+#         payment.provider_payment_response = decoded
+
+#         payment.save(update_fields=[
+#             "status",
+#             "provider_payment_response",
+#             "paid_at",
+#             "updated_at"
+#         ])
+
+#         return Response({"status": "ok"}, status=200)
+
 class PhonePeWebhookView(APIView):
 
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
     def post(self, request):
-        response_b64 = request.data.get("response")
 
+        # ✅ STEP 1: CHECK IF IT'S A VALIDATION PING (NO RESPONSE FIELD)
+        if isinstance(request.data, dict):
+            response_b64 = request.data.get("response")
+        else:
+            try:
+                body = json.loads(request.body.decode())
+                response_b64 = body.get("response")
+            except Exception:
+                # Empty body = validation ping
+                return Response({"status": "ok"}, status=200)
+
+        # If no response field = validation ping from PhonePe
         if not response_b64:
-            return Response({"detail": "Missing response"}, status=400)
+            logger.info("PhonePe webhook validation ping received")
+            return Response({"status": "ok"}, status=200)
 
+        # ✅ STEP 2: ONLY VERIFY BASIC AUTH FOR ACTUAL WEBHOOK EVENTS
+        auth_header = request.headers.get('Authorization')
+        
+        if not auth_header or not auth_header.startswith('Basic '):
+            logger.warning("Webhook without Basic auth")
+            return Response({"detail": "Unauthorized"}, status=401)
+        
+        try:
+            encoded_creds = auth_header.split(' ')[1]
+            decoded_creds = base64.b64decode(encoded_creds).decode('utf-8')
+            username, password = decoded_creds.split(':', 1)
+            
+            if username != settings.PHONEPE_WEBHOOK_USERNAME or password != settings.PHONEPE_WEBHOOK_PASSWORD:
+                logger.error("Invalid webhook credentials")
+                return Response({"detail": "Invalid credentials"}, status=401)
+                
+        except Exception as e:
+            logger.exception("Auth parsing failed: %s", e)
+            return Response({"detail": "Invalid Authorization header"}, status=401)
+
+        # ✅ STEP 3: DECODE AND PROCESS
         try:
             decoded = json.loads(
                 base64.b64decode(response_b64).decode()
@@ -2430,18 +2563,31 @@ class PhonePeWebhookView(APIView):
         state = decoded.get("state")
 
         if not transaction_id:
-            return Response({"detail": "transactionId missing"}, status=400)
+            return Response({"status": "ok"}, status=200)
 
         try:
             payment = Payment.objects.get(provider_order_id=transaction_id)
         except Payment.DoesNotExist:
             return Response({"detail": "Payment not found"}, status=404)
 
+        payment.attempts += 1
+
         if state == "COMPLETED":
             payment.status = Payment.STATUS_PAID
             payment.paid_at = timezone.now()
         elif state == "FAILED":
             payment.status = Payment.STATUS_FAILED
+        elif state == "EXPIRED":
+            payment.status = Payment.STATUS_EXPIRED
+        elif state == "CANCELLED":
+            payment.status = Payment.STATUS_CANCELLED
+            payment.cancelled_at = timezone.now()
+        elif state == "PENDING":
+            payment.status = Payment.STATUS_PENDING
+        elif state == "ATTEMPTED":
+            payment.status = Payment.STATUS_ATTEMPTED
+        elif state == "CREATED":
+            payment.status = Payment.STATUS_CREATED
         else:
             payment.status = Payment.STATUS_PENDING
 
@@ -2450,6 +2596,8 @@ class PhonePeWebhookView(APIView):
             "status",
             "provider_payment_response",
             "paid_at",
+            "cancelled_at",
+            "attempts",
             "updated_at"
         ])
 
@@ -2457,21 +2605,14 @@ class PhonePeWebhookView(APIView):
 
 class PhonePeRedirectView(APIView):
 
-    def post(self, request):
-        response_b64 = request.data.get("response")
+    authentication_classes = []
+    permission_classes = [AllowAny]
 
-        if not response_b64:
-            return Response({"detail": "Missing response"}, status=400)
-
-        try:
-            decoded = json.loads(
-                base64.b64decode(response_b64).decode()
-            )
-        except Exception:
-            return Response({"detail": "Invalid response payload"}, status=400)
-
-        transaction_id = decoded.get("transactionId")
-        state = decoded.get("state")
+    def get(self, request):
+        
+        transaction_id = request.GET.get('transactionId')
+        code = request.GET.get('code')
+        provider_reference_id = request.GET.get('providerReferenceId')
 
         if not transaction_id:
             return Response({"detail": "transactionId missing"}, status=400)
@@ -2481,24 +2622,42 @@ class PhonePeRedirectView(APIView):
         except Payment.DoesNotExist:
             return Response({"detail": "Payment not found"}, status=404)
 
-        if state == "COMPLETED":
+        # ✅ COMPLETE CODE MAPPING
+        if code == "PAYMENT_SUCCESS":
             payment.status = Payment.STATUS_PAID
             payment.paid_at = timezone.now()
-        elif state == "FAILED":
+        elif code == "PAYMENT_ERROR":
             payment.status = Payment.STATUS_FAILED
+        elif code == "PAYMENT_DECLINED":
+            payment.status = Payment.STATUS_FAILED
+        elif code == "PAYMENT_PENDING":
+            payment.status = Payment.STATUS_PENDING
+        elif code == "PAYMENT_CANCELLED":
+            payment.status = Payment.STATUS_CANCELLED
+            payment.cancelled_at = timezone.now()
+        elif code == "PAYMENT_EXPIRED":
+            payment.status = Payment.STATUS_EXPIRED
         else:
             payment.status = Payment.STATUS_PENDING
 
-        payment.provider_payment_response = decoded
+        if provider_reference_id:
+            response_data = payment.provider_payment_response or {}
+            response_data['providerReferenceId'] = provider_reference_id
+            payment.provider_payment_response = response_data
+
         payment.save(update_fields=[
             "status",
             "provider_payment_response",
             "paid_at",
+            "cancelled_at",
             "updated_at"
         ])
 
         return Response({
             "message": "Payment processed",
             "orderId": payment.order_id,
-            "status": payment.status
+            "status": payment.status,
+            "code": code
         }, status=200)
+
+

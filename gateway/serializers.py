@@ -170,13 +170,13 @@ class ForgotPasswordSerializer(serializers.Serializer):
 
 class ForgotPasswordConfirmSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    otp_code = serializers.CharField(max_length=6)
+    otp_code = serializers.CharField(max_length=4)
     new_password = serializers.CharField(write_only=True, min_length=8)
     confirm_password = serializers.CharField(write_only=True, min_length=8)
 
     def validate_otp_code(self, value):
-        if not value.isdigit() or len(value) != 6:
-            raise serializers.ValidationError("OTP must be six digit")
+        if not value.isdigit() or len(value) != 4:
+            raise serializers.ValidationError("OTP must be 4 digits")
         return value
 
     def validate(self, attrs):
@@ -191,11 +191,11 @@ class SendOTPSerializer(serializers.Serializer):
 
 class VerifyOTPSerializer(serializers.Serializer):
     otp_id = serializers.IntegerField(required=False)
-    otp_code = serializers.CharField(max_length=6)
+    otp_code = serializers.CharField(max_length=4)
 
     def validate_otp_code(self, value):
-        if not value.isdigit() or len(value) != 6:
-            raise serializers.ValidationError("OTP must be 6 digits.")
+        if not value.isdigit() or len(value) != 4:
+            raise serializers.ValidationError("OTP must be 4 digits.")
         return value
 
 

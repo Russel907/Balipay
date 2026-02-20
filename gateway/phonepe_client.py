@@ -1,6 +1,6 @@
 # gateway/phonepe_client.py
+
 import requests
-import json
 from django.conf import settings
 
 
@@ -38,7 +38,12 @@ def get_tsp_token():
 # =====================================
 # 2. CREATE PAYMENT (CUSTOM CHECKOUT)
 # =====================================
-def create_phonepe_payment(payload: dict):
+def create_phonepe_payment(
+    merchant_order_id: str, 
+    amount_in_paise: int,
+    callback_url: str,  # ✅ Added
+    redirect_url: str   # ✅ Added
+):
     access_token = get_tsp_token()
 
     url = "https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/pay"
@@ -47,14 +52,34 @@ def create_phonepe_payment(payload: dict):
         "Content-Type": "application/json",
         "Authorization": f"O-Bearer {access_token}",
         "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
+        "X-SOURCE": "API",
+        "X-SOURCE-CHANNEL": "web",
+        "X-BROWSER-FINGERPRINT": "testfingerprint123",
+        "X-MERCHANT-DOMAIN": "https://yourdomain.com",
+        "X-MERCHANT-IP": "127.0.0.1",
+        "X-MERCHANT-APP-ID": "com.balipay.app",
+        "X-SOURCE-CHANNEL-VERSION": "1"
     }
 
-    response = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=20
-    )
+    payload = {
+        "merchantOrderId": merchant_order_id,
+        "amount": amount_in_paise,
+        "expireAfter": 1200,
+        "callbackUrl": callback_url,      # ✅ Added
+        "redirectUrl": redirect_url,      # ✅ Added
+        "deviceContext": {
+            "deviceOS": "ANDROID"
+        },
+        "paymentFlow": {
+            "type": "PG",
+            "paymentMode": {
+                "type": "UPI_INTENT",
+                "targetApp": "com.phonepe.app"
+            }
+        }
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=20)
 
     if response.status_code not in (200, 201):
         raise PhonePeError(
@@ -63,53 +88,28 @@ def create_phonepe_payment(payload: dict):
 
     return response.json()
 
-# def create_phonepe_sdk_order(payload: dict):
-#     """Creates SDK order and returns token for UI initialization"""
-#     access_token = get_tsp_token()
-    
-#     url = "https://api-preprod.phonepe.com/apis/pg-sandbox/v2/order/create"
-    
-#     headers = {
-#         "Content-Type": "application/json",
-#         "Authorization": f"O-Bearer {access_token}",
-#         "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
-#     }
-    
-#     # Correct payload structure
-#     sdk_payload = {
-#         "merchantOrderId": payload["merchantTransactionId"],
-#         "amount": payload["amount"],
-#         "constraints": []  # Add constraints if needed
-#     }
-    
-#     response = requests.post(url, headers=headers, json=sdk_payload, timeout=20)
-    
-#     if response.status_code not in (200, 201):
-#         raise PhonePeError(f"SDK Order error {response.status_code}: {response.text}")
-    
-#     return response.json()  # Returns {orderId, state, expireAt, token}
-def create_phonepe_sdk_order(merchant_order_id: str, amount_in_paise: int):
+
+# =====================================
+# 3. CHECK ORDER STATUS (CORRECT)
+# =====================================
+def check_phonepe_order_status(merchant_order_id: str):
     access_token = get_tsp_token()
 
-    url = "https://api-preprod.phonepe.com/apis/pg-sandbox/v2/order/create"
+    url = f"https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/order/{merchant_order_id}/status"
 
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"O-Bearer {access_token}",
         "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
+        "X-SOURCE": "API",
+        "X-SOURCE-CHANNEL": "web"
     }
 
-    payload = {
-        "merchantOrderId": merchant_order_id,
-        "amount": amount_in_paise,
-        "constraints": []
-    }
+    response = requests.get(url, headers=headers, timeout=20)
 
-    response = requests.post(url, headers=headers, json=payload, timeout=20)
-
-    if response.status_code not in (200, 201):
+    if response.status_code != 200:
         raise PhonePeError(
-            f"SDK Order error {response.status_code}: {response.text}"
+            f"Status error {response.status_code}: {response.text}"
         )
 
     return response.json()

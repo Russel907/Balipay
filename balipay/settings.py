@@ -56,9 +56,11 @@ INSTALLED_APPS = [
     "gateway",
     "rest_framework",
     "rest_framework.authtoken",
+    "corsheaders",
 ]
 
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -120,8 +122,8 @@ AUTH_PASSWORD_VALIDATORS = [
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATIC_URL = '/static/'
 
-RAZORPAY_KEY_ID = "rzp_test_RZcCqBa5GoA3C8"
-RAZORPAY_KEY_SECRET = "bVdxysBO2ohy30oLX9o42we7"
+# RAZORPAY_KEY_ID = "rzp_test_RZcCqBa5GoA3C8"
+# RAZORPAY_KEY_SECRET = "bVdxysBO2ohy30oLX9o42we7"
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
@@ -165,11 +167,10 @@ PHONEPE_CLIENT_SECRET = os.getenv("PHONEPE_CLIENT_SECRET")
 PHONEPE_CLIENT_VERSION = os.getenv("PHONEPE_CLIENT_VERSION", "1")
 
 PHONEPE_MERCHANT_ID = os.getenv("PHONEPE_MERCHANT_ID")
-PHONEPE_BASE_URL = os.getenv("PHONEPE_BASE_URL")
 
-# PHONEPE_REDIRECT_URL = "https://yourdomain.com/phonepe/redirect"
-# PHONEPE_WEBHOOK_URL = "https://yourdomain.com/phonepe/webhook"
+PHONEPE_WEBHOOK_USERNAME = "ignivoxuser09"
+PHONEPE_WEBHOOK_PASSWORD = "ignivoxbalipay66"
 
-PHONEPE_REDIRECT_URL = os.getenv("PHONEPE_REDIRECT_URL")
-PHONEPE_WEBHOOK_URL = os.getenv("PHONEPE_WEBHOOK_URL")
+BASE_URL = "https://ascendingly-superaffluent-mike.ngrok-free.dev"  
 
+CORS_ALLOW_ALL_ORIGINS = True 

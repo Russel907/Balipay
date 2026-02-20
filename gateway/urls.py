@@ -5,8 +5,7 @@ from .views import MerchantSignupView, MerchantLoginView, CreatePaymentView, Sen
 from .views import GenerateTestAPIKeyView, RevokeAPIKeyView, ListPaymentOrdersView, CancelPaymentOrderView, CreateDeepLinkView
 from .views import CollectPayView, CheckOrderStatusView, DashboardView, DashboardV2View, PaymentsDashboardView, OrdersDashboardView
 from .views import CreateRefundView, RefundsDashboardView, SummaryReportView, GenerateLiveAPIKeyView, MerchantListView, MerchantProfileView
-from .views import ForgotPasswordRequestView, ForgotPasswordConfirmView, RazorpayWebhookView, PhonePeWebhookView, PhonePeRedirectView
-
+from .views import ForgotPasswordRequestView, ForgotPasswordConfirmView, PhonePeWebhookView, PhonePeRedirectView
 
 urlpatterns = [
     path('signup/merchant/', MerchantSignupView.as_view(), name='merchant-signup'),
@@ -32,7 +31,7 @@ urlpatterns = [
     path('v1/payments/collect/', CollectPayView.as_view(), name='payment-orders-collect'),
     path('v1/payments/status/',CheckOrderStatusView.as_view(), name='payment-orders-status'),
     path('v1/payments/refund/', CreateRefundView.as_view(), name="create-refund"),
-    path("v1/payments/webhook/", RazorpayWebhookView.as_view(), name="merchant-webhook"),
+    # path("v1/payments/webhook/", RazorpayWebhookView.as_view(), name="merchant-webhook"),
 
 
     path("payin/dashboard", DashboardView.as_view(), name="payin-dashboard"),
