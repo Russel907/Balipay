@@ -145,7 +145,7 @@ def create_phonepe_qr_payment(
         "callbackUrl": callback_url,
         "redirectUrl": redirect_url,
         "deviceContext": {
-            "deviceOS": "WEB"
+            "deviceOS": "ANDROID"
         },
         "paymentFlow": {
             "type": "PG",
