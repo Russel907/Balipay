@@ -118,6 +118,8 @@ def create_phonepe_payment(
 def create_phonepe_qr_payment(
     merchant_order_id: str,
     amount_in_paise: int,
+    callback_url: str,
+    redirect_url: str,
 ):
     access_token = get_tsp_token()
 
@@ -129,10 +131,10 @@ def create_phonepe_qr_payment(
         "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
         "X-SOURCE": "API",
         "X-SOURCE-CHANNEL": "web",
-        "X-BROWSER-FINGERPRINT": "testfingerprint123",
-        "X-MERCHANT-DOMAIN": "https://yourdomain.com",
+        "X-BROWSER-FINGERPRINT": "desktop_fingerprint",
+        "X-MERCHANT-DOMAIN": settings.BASE_URL,
         "X-MERCHANT-IP": "127.0.0.1",
-        "X-MERCHANT-APP-ID": "com.balipay.app",
+        "X-MERCHANT-APP-ID": "com.balipay.web",
         "X-SOURCE-CHANNEL-VERSION": "1"
     }
 
@@ -140,6 +142,11 @@ def create_phonepe_qr_payment(
         "merchantOrderId": merchant_order_id,
         "amount": amount_in_paise,
         "expireAfter": 1200,
+        "callbackUrl": callback_url,
+        "redirectUrl": redirect_url,
+        "deviceContext": {
+            "deviceOS": "WEB"
+        },
         "paymentFlow": {
             "type": "PG",
             "paymentMode": {

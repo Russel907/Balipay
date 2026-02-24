@@ -34,7 +34,7 @@ from .models import Merchant, Payment, OTP, APIKey, Refund
 from .serializers import MerchantSignupSerializer, MerchantLoginSerializer, SendOTPSerializer, VerifyOTPSerializer, GenerateAPIKeySerializer, APIKeyListSerializer, PaymentSerializer, MerchantSerializer, MerchantProfileUpdateSerializer, ForgotPasswordSerializer, ForgotPasswordConfirmSerializer
 # from .razorpay_client import create_razorpay_order
 from django.contrib.auth.models import User
-from gateway.phonepe_client import create_phonepe_payment
+from gateway.phonepe_client import create_phonepe_payment, create_phonepe_qr_payment
 from .phonepe_client import check_phonepe_order_status, get_tsp_token
 from rest_framework.permissions import AllowAny
 
@@ -802,6 +802,8 @@ class CreatePaymentView(APIView):
                     phonepe_resp = create_phonepe_qr_payment(
                         merchant_order_id=client_order_id,
                         amount_in_paise=amount_in_paise,
+                        callback_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/webhook/",
+                        redirect_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/redirect/",
                     )
                 else:
                     phonepe_resp = create_phonepe_payment(
