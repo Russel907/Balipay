@@ -142,6 +142,8 @@ def create_phonepe_qr_payment(
         "merchantOrderId": merchant_order_id,
         "amount": amount_in_paise,
         "expireAfter": 1200,
+        "callbackUrl": callback_url,
+        "redirectUrl": redirect_url,
         "paymentFlow": {
             "type": "PG",
             "paymentMode": {
