@@ -1,5 +1,6 @@
 # gateway/phonepe_client.py
 
+import time
 import requests
 from django.conf import settings
 
@@ -9,9 +10,23 @@ class PhonePeError(Exception):
 
 
 # =====================================
-# 1. GET TSP AUTH TOKEN (SANDBOX)
+# TOKEN CACHE
+# =====================================
+_token_cache = {
+    "token": None,
+    "expires_at": 0
+}
+
+
+# =====================================
+# 1. GET TSP AUTH TOKEN (CACHED)
 # =====================================
 def get_tsp_token():
+    buffer = 4 * 60  # Refresh 4 minutes before expiry
+
+    if _token_cache["token"] and time.time() < (_token_cache["expires_at"] - buffer):
+        return _token_cache["token"]
+
     url = "https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token"
 
     headers = {
@@ -32,17 +47,77 @@ def get_tsp_token():
             f"Token error {response.status_code}: {response.text}"
         )
 
-    return response.json()["access_token"]
+    resp = response.json()
+    _token_cache["token"] = resp["access_token"]
+    _token_cache["expires_at"] = time.time() + resp.get("expires_in", 3600)
+
+    return _token_cache["token"]
 
 
 # =====================================
 # 2. CREATE PAYMENT (CUSTOM CHECKOUT)
 # =====================================
 def create_phonepe_payment(
-    merchant_order_id: str, 
+    merchant_order_id: str,
     amount_in_paise: int,
-    callback_url: str,  # ✅ Added
-    redirect_url: str   # ✅ Added
+    callback_url: str,
+    redirect_url: str,
+    device_os: str = "ANDROID"
+):
+    access_token = get_tsp_token()
+
+    url = "https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/pay"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"O-Bearer {access_token}",
+        "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
+        "X-SOURCE": "API",
+        "X-SOURCE-CHANNEL": "web",
+        "X-BROWSER-FINGERPRINT": "testfingerprint123",
+        "X-MERCHANT-DOMAIN": "https://yourdomain.com",
+        "X-MERCHANT-IP": "127.0.0.1",
+        "X-MERCHANT-APP-ID": "com.balipay.app",
+        "X-SOURCE-CHANNEL-VERSION": "1"
+    }
+
+    if device_os == "WEB":
+        payment_mode = {"type": "UPI_QR"}
+    else:
+        payment_mode = {
+            "type": "UPI_INTENT",
+            "targetApp": "com.phonepe.app"
+        }
+
+    payload = {
+        "merchantOrderId": merchant_order_id,
+        "amount": amount_in_paise,
+        "expireAfter": 1200,
+        "callbackUrl": callback_url,
+        "redirectUrl": redirect_url,
+        "deviceContext": {
+            "deviceOS": device_os
+        },
+        "paymentFlow": {
+            "type": "PG",
+            "paymentMode": payment_mode
+        }
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=20)
+    print("PhonePe full response:", response.json())
+
+    if response.status_code not in (200, 201):
+        raise PhonePeError(
+            f"Payment error {response.status_code}: {response.text}"
+        )
+
+    return response.json()
+
+
+def create_phonepe_qr_payment(
+    merchant_order_id: str,
+    amount_in_paise: int,
 ):
     access_token = get_tsp_token()
 
@@ -65,16 +140,10 @@ def create_phonepe_payment(
         "merchantOrderId": merchant_order_id,
         "amount": amount_in_paise,
         "expireAfter": 1200,
-        "callbackUrl": callback_url,      # ✅ Added
-        "redirectUrl": redirect_url,      # ✅ Added
-        "deviceContext": {
-            "deviceOS": "ANDROID"
-        },
         "paymentFlow": {
             "type": "PG",
             "paymentMode": {
-                "type": "UPI_INTENT",
-                "targetApp": "com.phonepe.app"
+                "type": "UPI_QR"
             }
         }
     }
@@ -83,14 +152,14 @@ def create_phonepe_payment(
 
     if response.status_code not in (200, 201):
         raise PhonePeError(
-            f"Payment error {response.status_code}: {response.text}"
+            f"QR Payment error {response.status_code}: {response.text}"
         )
 
     return response.json()
 
 
 # =====================================
-# 3. CHECK ORDER STATUS (CORRECT)
+# 3. CHECK ORDER STATUS
 # =====================================
 def check_phonepe_order_status(merchant_order_id: str):
     access_token = get_tsp_token()

@@ -717,6 +717,7 @@ class CreatePaymentView(APIView):
         mobile = d.get('mobileNo')
         email = d.get('emailID')
         vpa = d.get('vpa')
+        device_os = d.get('deviceOS', 'ANDROID')
 
         # Required fields check
         if not all([client_id, secret_key, client_order_id, amount, name, mobile, email]):
@@ -761,7 +762,7 @@ class CreatePaymentView(APIView):
                     defaults={
                         "amount": amount_str,
                         "vpa": vpa or "",
-                        "status": Payment.STATUS_CREATED,  # ✅ Changed from PENDING
+                        "status": Payment.STATUS_CREATED,
                         "payer_name": name,
                         "payer_mobile": mobile,
                         "payer_email": email,
@@ -790,24 +791,34 @@ class CreatePaymentView(APIView):
                                 "amount": amount_str,
                                 "currency": "INR",
                                 "intentUrl": payment.provider_order_response.get("intentUrl") if payment.provider_order_response else None,
+                                "qrData": payment.provider_order_response.get("qrData") if payment.provider_order_response else None,
                                 "state": payment.status
                             },
                             status=status.HTTP_200_OK
                         )
 
-                # ✅ PHONEPE PAY API WITH CALLBACK AND REDIRECT URLs
-                phonepe_resp = create_phonepe_payment(
-                    merchant_order_id=client_order_id,
-                    amount_in_paise=amount_in_paise,
-                    callback_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/webhook/",  # ✅ Added
-                    redirect_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/redirect/"  # ✅ Added
-                )
+                # ✅ Choose payment function based on device
+                if device_os == 'WEB':
+                    phonepe_resp = create_phonepe_qr_payment(
+                        merchant_order_id=client_order_id,
+                        amount_in_paise=amount_in_paise,
+                    )
+                else:
+                    phonepe_resp = create_phonepe_payment(
+                        merchant_order_id=client_order_id,
+                        amount_in_paise=amount_in_paise,
+                        callback_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/webhook/",
+                        redirect_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/redirect/",
+                        device_os=device_os
+                    )
+
+                print("PHONEPE RESP:", phonepe_resp)
 
                 payment.provider_order_id = phonepe_resp.get("orderId")
                 payment.provider_order_response = phonepe_resp
                 payment.amount_in_paise = amount_in_paise
                 payment.currency = "INR"
-                payment.status = Payment.STATUS_PENDING  # ✅ Update to pending after creation
+                payment.status = Payment.STATUS_PENDING
 
                 payment.save(update_fields=[
                     "provider_order_id",
@@ -835,6 +846,7 @@ class CreatePaymentView(APIView):
                 "amount": amount_str,
                 "currency": "INR",
                 "intentUrl": phonepe_resp.get("intentUrl"),
+                "qrData": phonepe_resp.get("qrData"),
                 "state": phonepe_resp.get("state")
             },
             status=status.HTTP_201_CREATED
@@ -2515,88 +2527,72 @@ class PhonePeWebhookView(APIView):
 
     def post(self, request):
 
-        # ✅ STEP 1: CHECK IF IT'S A VALIDATION PING (NO RESPONSE FIELD)
-        if isinstance(request.data, dict):
-            response_b64 = request.data.get("response")
-        else:
-            try:
-                body = json.loads(request.body.decode())
-                response_b64 = body.get("response")
-            except Exception:
-                # Empty body = validation ping
-                return Response({"status": "ok"}, status=200)
-
-        # If no response field = validation ping from PhonePe
-        if not response_b64:
-            logger.info("PhonePe webhook validation ping received")
-            return Response({"status": "ok"}, status=200)
-
-        # ✅ STEP 2: ONLY VERIFY BASIC AUTH FOR ACTUAL WEBHOOK EVENTS
+        # ✅ STEP 1: VALIDATE BASIC AUTH HEADER FIRST (before anything else)
         auth_header = request.headers.get('Authorization')
-        
+
         if not auth_header or not auth_header.startswith('Basic '):
-            logger.warning("Webhook without Basic auth")
+            logger.warning("Webhook missing/invalid Authorization header")
             return Response({"detail": "Unauthorized"}, status=401)
-        
+
         try:
             encoded_creds = auth_header.split(' ')[1]
             decoded_creds = base64.b64decode(encoded_creds).decode('utf-8')
             username, password = decoded_creds.split(':', 1)
-            
+
             if username != settings.PHONEPE_WEBHOOK_USERNAME or password != settings.PHONEPE_WEBHOOK_PASSWORD:
                 logger.error("Invalid webhook credentials")
                 return Response({"detail": "Invalid credentials"}, status=401)
-                
+
         except Exception as e:
             logger.exception("Auth parsing failed: %s", e)
             return Response({"detail": "Invalid Authorization header"}, status=401)
 
-        # ✅ STEP 3: DECODE AND PROCESS
+        # ✅ STEP 2: PARSE PAYLOAD
         try:
-            decoded = json.loads(
-                base64.b64decode(response_b64).decode()
-            )
+            data = request.data if isinstance(request.data, dict) else json.loads(request.body.decode())
         except Exception:
-            return Response({"detail": "Invalid response payload"}, status=400)
+            return Response({"detail": "Invalid JSON"}, status=400)
 
-        transaction_id = decoded.get("transactionId")
-        state = decoded.get("state")
-
-        if not transaction_id:
+        # Validation ping - no type field
+        if not data.get("type"):
             return Response({"status": "ok"}, status=200)
 
+        event_type = data.get("type")  # PG_ORDER_COMPLETED, PG_ORDER_FAILED etc
+        payload = data.get("payload", {})
+
+        merchant_order_id = payload.get("merchantOrderId")
+        state = payload.get("state")  # ROOT level state only
+
+        if not merchant_order_id:
+            return Response({"status": "ok"}, status=200)
+
+        # ✅ STEP 3: FIND PAYMENT
         try:
-            payment = Payment.objects.get(provider_order_id=transaction_id)
+            payment = Payment.objects.get(order_id=merchant_order_id)
         except Payment.DoesNotExist:
+            logger.warning("Payment not found for merchantOrderId: %s", merchant_order_id)
             return Response({"detail": "Payment not found"}, status=404)
 
         payment.attempts += 1
 
-        if state == "COMPLETED":
+        # ✅ STEP 4: UPDATE STATUS
+        if event_type == "PG_REFUND_COMPLETED":
+            payment.status = Payment.STATUS_REFUNDED
+        elif event_type == "PG_REFUND_FAILED":
+            payment.status = Payment.STATUS_FAILED
+        elif state == "COMPLETED":
             payment.status = Payment.STATUS_PAID
             payment.paid_at = timezone.now()
         elif state == "FAILED":
             payment.status = Payment.STATUS_FAILED
-        elif state == "EXPIRED":
-            payment.status = Payment.STATUS_EXPIRED
-        elif state == "CANCELLED":
-            payment.status = Payment.STATUS_CANCELLED
-            payment.cancelled_at = timezone.now()
-        elif state == "PENDING":
-            payment.status = Payment.STATUS_PENDING
-        elif state == "ATTEMPTED":
-            payment.status = Payment.STATUS_ATTEMPTED
-        elif state == "CREATED":
-            payment.status = Payment.STATUS_CREATED
         else:
             payment.status = Payment.STATUS_PENDING
 
-        payment.provider_payment_response = decoded
+        payment.provider_payment_response = payload
         payment.save(update_fields=[
             "status",
             "provider_payment_response",
             "paid_at",
-            "cancelled_at",
             "attempts",
             "updated_at"
         ])
