@@ -119,8 +119,6 @@ def create_phonepe_payment(
 def create_phonepe_qr_payment(
     merchant_order_id: str,
     amount_in_paise: int,
-    callback_url: str,
-    redirect_url: str,
 ):
     access_token = get_tsp_token()
 
@@ -142,9 +140,7 @@ def create_phonepe_qr_payment(
     payload = {
         "merchantOrderId": merchant_order_id,
         "amount": amount_in_paise,
-        "expireAfter": 1200,
-        "callbackUrl": callback_url,
-        "redirectUrl": redirect_url,
+        "expireAfter": 480,
         "paymentFlow": {
             "type": "PG",
             "paymentMode": {
@@ -161,7 +157,6 @@ def create_phonepe_qr_payment(
         )
 
     return response.json()
-
 
 # =====================================
 # 3. CHECK ORDER STATUS
