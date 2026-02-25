@@ -1253,38 +1253,44 @@ class CheckOrderStatusView(APIView):
             status_resp = check_phonepe_order_status(client_order_id)
             phonepe_state = status_resp.get("state")
 
-            # ✅ INCREMENT ATTEMPTS
             payment.attempts += 1
-
-            # UPDATE STATUS
-            if phonepe_state == "COMPLETED":
-                payment.status = Payment.STATUS_PAID
-                payment.paid_at = timezone.now()
-            elif phonepe_state == "FAILED":
-                payment.status = Payment.STATUS_FAILED
-            elif phonepe_state == "EXPIRED":
-                payment.status = Payment.STATUS_EXPIRED
-            elif phonepe_state == "CANCELLED":
-                payment.status = Payment.STATUS_CANCELLED
-                payment.cancelled_at = timezone.now()
-            elif phonepe_state == "PENDING":
-                payment.status = Payment.STATUS_PENDING
-            elif phonepe_state == "ATTEMPTED":
-                payment.status = Payment.STATUS_ATTEMPTED
-            elif phonepe_state == "CREATED":
-                payment.status = Payment.STATUS_CREATED
-            else:
-                payment.status = Payment.STATUS_PENDING
-
             payment.provider_status_response = status_resp
-            payment.save(update_fields=[
-                "status", 
-                "provider_status_response", 
-                "paid_at",
-                "cancelled_at",
-                "attempts",  # ✅ ADDED
-                "updated_at"
-            ])
+
+            # ✅ ONLY update status for TERMINAL states
+            # Never overwrite terminal status already set by webhook
+            TERMINAL_STATUSES = [
+                Payment.STATUS_PAID,
+                Payment.STATUS_FAILED,
+                Payment.STATUS_EXPIRED,
+                Payment.STATUS_CANCELLED,
+                Payment.STATUS_REFUNDED
+            ]
+
+            # If already in terminal status (set by webhook), don't overwrite
+            if payment.status in TERMINAL_STATUSES:
+                payment.save(update_fields=["provider_status_response", "attempts", "updated_at"])
+            else:
+                # Only update if PhonePe returns terminal state
+                if phonepe_state == "COMPLETED":
+                    payment.status = Payment.STATUS_PAID
+                    payment.paid_at = timezone.now()
+                elif phonepe_state == "FAILED":
+                    payment.status = Payment.STATUS_FAILED
+                elif phonepe_state == "EXPIRED":
+                    payment.status = Payment.STATUS_EXPIRED
+                elif phonepe_state == "CANCELLED":
+                    payment.status = Payment.STATUS_CANCELLED
+                    payment.cancelled_at = timezone.now()
+                # ✅ PENDING/ATTEMPTED/CREATED - don't change db status
+
+                payment.save(update_fields=[
+                    "status",
+                    "provider_status_response",
+                    "paid_at",
+                    "cancelled_at",
+                    "attempts",
+                    "updated_at"
+                ])
 
         except Exception as exc:
             logger.exception("Status check failed: %s", exc)
@@ -1299,7 +1305,7 @@ class CheckOrderStatusView(APIView):
                 "clientOrderId": client_order_id,
                 "phonepeState": phonepe_state,
                 "dbStatus": payment.status,
-                "attempts": payment.attempts  # ✅ ADDED
+                "attempts": payment.attempts
             }
         )
         
