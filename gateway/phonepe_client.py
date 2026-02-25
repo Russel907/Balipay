@@ -3,7 +3,8 @@
 import time
 import requests
 from django.conf import settings
-
+from django.utils import timezone
+from gateway.models import Payment
 
 class PhonePeError(Exception):
     pass
@@ -73,7 +74,7 @@ def create_phonepe_payment(
         "Authorization": f"O-Bearer {access_token}",
         "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
         "X-SOURCE": "API",
-        "X-SOURCE-CHANNEL": "web",
+        "X-SOURCE-CHANNEL": "android",
         "X-BROWSER-FINGERPRINT": "testfingerprint123",
         "X-MERCHANT-DOMAIN": "https://yourdomain.com",
         "X-MERCHANT-IP": "127.0.0.1",
@@ -186,3 +187,40 @@ def check_phonepe_order_status(merchant_order_id: str):
         )
 
     return response.json()
+
+
+def poll_phonepe_order_until_terminal(merchant_order_id: str, timeout_seconds=1200):
+    start_time = time.time()
+
+    while time.time() - start_time < timeout_seconds:
+        status_response = check_phonepe_order_status(merchant_order_id)
+
+        state = status_response.get("state")
+
+        payment = Payment.objects.filter(order_id=merchant_order_id).first()
+        if not payment:
+            return
+
+        payment.provider_status_response = status_response
+
+        if state == "COMPLETED":
+            payment.status = Payment.STATUS_PAID
+            payment.paid_at = timezone.now()
+            payment.save(update_fields=["status", "provider_status_response", "paid_at", "updated_at"])
+            return
+
+        elif state == "FAILED":
+            payment.status = Payment.STATUS_FAILED
+            payment.save(update_fields=["status", "provider_status_response", "updated_at"])
+            return
+
+        elif state == "EXPIRED":
+            payment.status = Payment.STATUS_EXPIRED
+            payment.save(update_fields=["status", "provider_status_response", "updated_at"])
+            return
+
+        time.sleep(5)  # Poll every 5 seconds
+
+    # Timeout case
+    payment.status = Payment.STATUS_PENDING
+    payment.save(update_fields=["status", "updated_at"])

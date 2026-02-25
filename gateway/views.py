@@ -5,6 +5,7 @@ import requests
 import json
 import urllib.parse, qrcode, io, base64, hmac, hashlib, json, time
 from io import BytesIO
+import threading
 
 from django.shortcuts import get_object_or_404
 from django.db import transaction
@@ -37,7 +38,7 @@ from django.contrib.auth.models import User
 from gateway.phonepe_client import create_phonepe_payment, create_phonepe_qr_payment
 from .phonepe_client import check_phonepe_order_status, get_tsp_token
 from rest_framework.permissions import AllowAny
-
+from gateway.phonepe_client import poll_phonepe_order_until_terminal
 
 logger = logging.getLogger(__name__)
 WEBHOOK_TOLERANCE_SECONDS = 5 * 60
@@ -829,7 +830,7 @@ class CreatePaymentView(APIView):
                     "currency",
                     "status",
                     "updated_at",
-                ])
+                ])                
 
         except Exception as exc:
             logger.exception("CreatePaymentView failed: %s", exc)
@@ -837,6 +838,14 @@ class CreatePaymentView(APIView):
                 {"Statuscode": 0, "Message": "Failed to create payment"},
                 status=status.HTTP_502_BAD_GATEWAY
             )
+            
+        
+        thread = threading.Thread(
+            target=poll_phonepe_order_until_terminal, 
+            args=(client_order_id,)
+        )
+        thread.daemon = True
+        thread.start()
         
         # Final Response
         return Response(
@@ -2529,25 +2538,23 @@ class PhonePeWebhookView(APIView):
 
     def post(self, request):
 
-        # ✅ STEP 1: VALIDATE BASIC AUTH HEADER FIRST (before anything else)
+        # ✅ STEP 1: VALIDATE SHA256 AUTHORIZATION HEADER
         auth_header = request.headers.get('Authorization')
 
-        if not auth_header or not auth_header.startswith('Basic '):
-            logger.warning("Webhook missing/invalid Authorization header")
+        if not auth_header:
+            logger.warning("Webhook missing Authorization header")
             return Response({"detail": "Unauthorized"}, status=401)
 
-        try:
-            encoded_creds = auth_header.split(' ')[1]
-            decoded_creds = base64.b64decode(encoded_creds).decode('utf-8')
-            username, password = decoded_creds.split(':', 1)
+        # PhonePe sends: Authorization: SHA256(username:password)
+        expected_hash = hashlib.sha256(
+            f"{settings.PHONEPE_WEBHOOK_USERNAME}:{settings.PHONEPE_WEBHOOK_PASSWORD}".encode()
+        ).hexdigest()
 
-            if username != settings.PHONEPE_WEBHOOK_USERNAME or password != settings.PHONEPE_WEBHOOK_PASSWORD:
-                logger.error("Invalid webhook credentials")
-                return Response({"detail": "Invalid credentials"}, status=401)
+        expected_auth = f"SHA256 {expected_hash}"
 
-        except Exception as e:
-            logger.exception("Auth parsing failed: %s", e)
-            return Response({"detail": "Invalid Authorization header"}, status=401)
+        if auth_header != expected_auth:
+            logger.error("Invalid webhook authorization. Received: %s, Expected: %s", auth_header, expected_auth)
+            return Response({"detail": "Invalid credentials"}, status=401)
 
         # ✅ STEP 2: PARSE PAYLOAD
         try:
@@ -2555,38 +2562,62 @@ class PhonePeWebhookView(APIView):
         except Exception:
             return Response({"detail": "Invalid JSON"}, status=400)
 
-        # Validation ping - no type field
-        if not data.get("type"):
+        # Validation ping
+        if not data.get("event"):
             return Response({"status": "ok"}, status=200)
 
-        event_type = data.get("type")  # PG_ORDER_COMPLETED, PG_ORDER_FAILED etc
+        # ✅ STEP 3: USE event FIELD (not type)
+        event = data.get("event")  # pg.order.completed, pg.order.failed, pg.refund.completed, pg.refund.failed
         payload = data.get("payload", {})
 
         merchant_order_id = payload.get("merchantOrderId")
         state = payload.get("state")  # ROOT level state only
 
+        logger.info("Webhook received: event=%s, merchantOrderId=%s, state=%s", event, merchant_order_id, state)
+
+        # ✅ STEP 4: HANDLE REFUND EVENTS (use originalMerchantOrderId)
+        if event in ["pg.refund.completed", "pg.refund.failed"]:
+            original_order_id = payload.get("originalMerchantOrderId")
+            if not original_order_id:
+                return Response({"status": "ok"}, status=200)
+
+            try:
+                payment = Payment.objects.get(order_id=original_order_id)
+            except Payment.DoesNotExist:
+                logger.warning("Payment not found for refund originalMerchantOrderId: %s", original_order_id)
+                return Response({"status": "ok"}, status=200)
+
+            if event == "pg.refund.completed":
+                payment.status = Payment.STATUS_REFUNDED
+            elif event == "pg.refund.failed":
+                payment.status = Payment.STATUS_FAILED
+
+            payment.provider_payment_response = payload
+            payment.save(update_fields=["status", "provider_payment_response", "updated_at"])
+            return Response({"status": "ok"}, status=200)
+
+        # ✅ STEP 5: HANDLE ORDER EVENTS
         if not merchant_order_id:
             return Response({"status": "ok"}, status=200)
 
-        # ✅ STEP 3: FIND PAYMENT
         try:
             payment = Payment.objects.get(order_id=merchant_order_id)
         except Payment.DoesNotExist:
             logger.warning("Payment not found for merchantOrderId: %s", merchant_order_id)
-            return Response({"detail": "Payment not found"}, status=404)
+            return Response({"status": "ok"}, status=200)
 
         payment.attempts += 1
 
-        # ✅ STEP 4: UPDATE STATUS
-        if event_type == "PG_REFUND_COMPLETED":
-            payment.status = Payment.STATUS_REFUNDED
-        elif event_type == "PG_REFUND_FAILED":
-            payment.status = Payment.STATUS_FAILED
-        elif state == "COMPLETED":
+        # ✅ STEP 6: UPDATE STATUS using root level state
+        if event == "pg.order.completed" or state == "COMPLETED":
             payment.status = Payment.STATUS_PAID
             payment.paid_at = timezone.now()
-        elif state == "FAILED":
+        elif event == "pg.order.failed" or state == "FAILED":
             payment.status = Payment.STATUS_FAILED
+        elif state == "EXPIRED":
+            payment.status = Payment.STATUS_EXPIRED
+        elif state == "CANCELLED":
+            payment.status = Payment.STATUS_CANCELLED
         else:
             payment.status = Payment.STATUS_PENDING
 
