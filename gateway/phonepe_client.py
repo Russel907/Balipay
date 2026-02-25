@@ -192,35 +192,67 @@ def check_phonepe_order_status(merchant_order_id: str):
 def poll_phonepe_order_until_terminal(merchant_order_id: str, timeout_seconds=1200):
     start_time = time.time()
 
-    while time.time() - start_time < timeout_seconds:
-        status_response = check_phonepe_order_status(merchant_order_id)
+    # Poll schedule as per PhonePe recommendation
+    schedule = (
+        [(3, 30)] +    # every 3 sec for 30 sec
+        [(6, 60)] +    # every 6 sec for 60 sec
+        [(10, 60)] +   # every 10 sec for 60 sec
+        [(30, 60)] +   # every 30 sec for 60 sec
+        [(60, 999999)] # every 60 sec until timeout
+    )
 
-        state = status_response.get("state")
+    for interval, duration in schedule:
+        segment_start = time.time()
+        while time.time() - segment_start < duration:
+            # ✅ STOP if already in terminal state (set by webhook)
+            payment = Payment.objects.filter(order_id=merchant_order_id).first()
+            if not payment:
+                return
+            
+            if payment.status in [
+                Payment.STATUS_PAID, 
+                Payment.STATUS_FAILED, 
+                Payment.STATUS_EXPIRED,
+                Payment.STATUS_CANCELLED,
+                Payment.STATUS_REFUNDED
+            ]:
+                logger.info("Polling stopped - terminal status already set: %s", payment.status)
+                return
 
-        payment = Payment.objects.filter(order_id=merchant_order_id).first()
-        if not payment:
-            return
+            # Check total timeout
+            if time.time() - start_time >= timeout_seconds:
+                return
 
-        payment.provider_status_response = status_response
+            try:
+                status_response = check_phonepe_order_status(merchant_order_id)
+                state = status_response.get("state")
 
-        if state == "COMPLETED":
-            payment.status = Payment.STATUS_PAID
-            payment.paid_at = timezone.now()
-            payment.save(update_fields=["status", "provider_status_response", "paid_at", "updated_at"])
-            return
+                payment.provider_status_response = status_response
+                payment.attempts = payment.attempts + 1
 
-        elif state == "FAILED":
-            payment.status = Payment.STATUS_FAILED
-            payment.save(update_fields=["status", "provider_status_response", "updated_at"])
-            return
+                if state == "COMPLETED":
+                    payment.status = Payment.STATUS_PAID
+                    payment.paid_at = timezone.now()
+                    payment.save(update_fields=["status", "provider_status_response", "paid_at", "attempts", "updated_at"])
+                    logger.info("Polling: COMPLETED for %s", merchant_order_id)
+                    return
 
-        elif state == "EXPIRED":
-            payment.status = Payment.STATUS_EXPIRED
-            payment.save(update_fields=["status", "provider_status_response", "updated_at"])
-            return
+                elif state == "FAILED":
+                    payment.status = Payment.STATUS_FAILED
+                    payment.save(update_fields=["status", "provider_status_response", "attempts", "updated_at"])
+                    logger.info("Polling: FAILED for %s", merchant_order_id)
+                    return
 
-        time.sleep(5)  # Poll every 5 seconds
+                elif state == "EXPIRED":
+                    payment.status = Payment.STATUS_EXPIRED
+                    payment.save(update_fields=["status", "provider_status_response", "attempts", "updated_at"])
+                    logger.info("Polling: EXPIRED for %s", merchant_order_id)
+                    return
 
-    # Timeout case
-    payment.status = Payment.STATUS_PENDING
-    payment.save(update_fields=["status", "updated_at"])
+                else:
+                    payment.save(update_fields=["provider_status_response", "attempts", "updated_at"])
+
+            except Exception as exc:
+                logger.exception("Polling error for %s: %s", merchant_order_id, exc)
+
+            time.sleep(interval)
