@@ -188,44 +188,54 @@ def check_phonepe_order_status(merchant_order_id: str):
 
     return response.json()
 
-
 def poll_phonepe_order_until_terminal(merchant_order_id: str, timeout_seconds=1200):
     start_time = time.time()
 
-    # Poll schedule as per PhonePe recommendation
-    schedule = (
-        [(3, 30)] +    # every 3 sec for 30 sec
-        [(6, 60)] +    # every 6 sec for 60 sec
-        [(10, 60)] +   # every 10 sec for 60 sec
-        [(30, 60)] +   # every 30 sec for 60 sec
-        [(60, 999999)] # every 60 sec until timeout
-    )
+    schedule = [
+        (3, 30),
+        (6, 60),
+        (10, 60),
+        (30, 60),
+        (60, 999999)
+    ]
+
+    TERMINAL_STATUSES = [
+        Payment.STATUS_PAID,
+        Payment.STATUS_FAILED,
+        Payment.STATUS_EXPIRED,
+        Payment.STATUS_CANCELLED,
+        Payment.STATUS_REFUNDED
+    ]
 
     for interval, duration in schedule:
         segment_start = time.time()
         while time.time() - segment_start < duration:
-            # ✅ STOP if already in terminal state (set by webhook)
-            payment = Payment.objects.filter(order_id=merchant_order_id).first()
-            if not payment:
-                return
-            
-            if payment.status in [
-                Payment.STATUS_PAID, 
-                Payment.STATUS_FAILED, 
-                Payment.STATUS_EXPIRED,
-                Payment.STATUS_CANCELLED,
-                Payment.STATUS_REFUNDED
-            ]:
-                logger.info("Polling stopped - terminal status already set: %s", payment.status)
+
+            if time.time() - start_time >= timeout_seconds:
                 return
 
-            # Check total timeout
-            if time.time() - start_time >= timeout_seconds:
+            # ✅ ALWAYS check db FIRST before doing anything
+            try:
+                payment = Payment.objects.get(order_id=merchant_order_id)
+            except Payment.DoesNotExist:
+                return
+
+            # ✅ If webhook already set terminal status — STOP immediately
+            if payment.status in TERMINAL_STATUSES:
+                logger.info("Polling stopped - webhook already set terminal status: %s for %s", payment.status, merchant_order_id)
                 return
 
             try:
                 status_response = check_phonepe_order_status(merchant_order_id)
                 state = status_response.get("state")
+
+                # ✅ Refresh payment from db again (webhook might have updated during API call)
+                payment = Payment.objects.get(order_id=merchant_order_id)
+                
+                # ✅ Check again after refresh
+                if payment.status in TERMINAL_STATUSES:
+                    logger.info("Polling stopped after refresh - terminal status: %s", payment.status)
+                    return
 
                 payment.provider_status_response = status_response
                 payment.attempts = payment.attempts + 1
@@ -234,22 +244,20 @@ def poll_phonepe_order_until_terminal(merchant_order_id: str, timeout_seconds=12
                     payment.status = Payment.STATUS_PAID
                     payment.paid_at = timezone.now()
                     payment.save(update_fields=["status", "provider_status_response", "paid_at", "attempts", "updated_at"])
-                    logger.info("Polling: COMPLETED for %s", merchant_order_id)
                     return
 
                 elif state == "FAILED":
                     payment.status = Payment.STATUS_FAILED
                     payment.save(update_fields=["status", "provider_status_response", "attempts", "updated_at"])
-                    logger.info("Polling: FAILED for %s", merchant_order_id)
                     return
 
                 elif state == "EXPIRED":
                     payment.status = Payment.STATUS_EXPIRED
                     payment.save(update_fields=["status", "provider_status_response", "attempts", "updated_at"])
-                    logger.info("Polling: EXPIRED for %s", merchant_order_id)
                     return
 
                 else:
+                    # PENDING - just save status response, don't change status
                     payment.save(update_fields=["provider_status_response", "attempts", "updated_at"])
 
             except Exception as exc:
