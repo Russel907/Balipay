@@ -61,8 +61,8 @@ def get_tsp_token():
 def create_phonepe_payment(
     merchant_order_id: str,
     amount_in_paise: int,
-    callback_url: str,
-    redirect_url: str,
+    # callback_url: str,
+    # redirect_url: str,
     device_os: str = "ANDROID"
 ):
     access_token = get_tsp_token()
@@ -94,8 +94,8 @@ def create_phonepe_payment(
         "merchantOrderId": merchant_order_id,
         "amount": amount_in_paise,
         "expireAfter": 1200,
-        "callbackUrl": callback_url,
-        "redirectUrl": redirect_url,
+        # "callbackUrl": callback_url,
+        # "redirectUrl": redirect_url,
         "deviceContext": {
             "deviceOS": device_os
         },

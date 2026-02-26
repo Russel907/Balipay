@@ -810,8 +810,8 @@ class CreatePaymentView(APIView):
                     phonepe_resp = create_phonepe_payment(
                         merchant_order_id=client_order_id,
                         amount_in_paise=amount_in_paise,
-                        callback_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/webhook/",
-                        redirect_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/redirect/",
+                        # callback_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/webhook/",
+                        # redirect_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/redirect/",
                         device_os=device_os
                     )
 
