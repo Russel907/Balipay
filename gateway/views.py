@@ -2629,10 +2629,10 @@ class PhonePeWebhookView(APIView):
         payment.attempts += 1
 
         # ✅ STEP 6: UPDATE STATUS using root level state
-        if event == "pg.order.completed" or state == "COMPLETED":
+        if event in ["pg.order.completed", "checkout.order.completed"] or state == "COMPLETED":
             payment.status = Payment.STATUS_PAID
             payment.paid_at = timezone.now()
-        elif event == "pg.order.failed" or state == "FAILED":
+        elif event in ["pg.order.failed", "checkout.order.failed"] or state == "FAILED":
             payment.status = Payment.STATUS_FAILED
         elif state == "EXPIRED":
             payment.status = Payment.STATUS_EXPIRED
