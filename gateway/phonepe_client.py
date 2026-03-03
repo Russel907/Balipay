@@ -158,6 +158,28 @@ def create_phonepe_qr_payment(
 
     return response.json()
 
+def check_phonepe_refund_status(merchant_refund_id: str):
+    access_token = get_tsp_token()
+
+    url = f"https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/refund/{merchant_refund_id}/status"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"O-Bearer {access_token}",
+        "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
+        "X-SOURCE": "API",
+        "X-SOURCE-CHANNEL": "web",
+        "X-MERCHANT-IP": "127.0.0.1"
+    }
+
+    response = requests.get(url, headers=headers, timeout=20)
+
+    if response.status_code != 200:
+        raise PhonePeError(
+            f"Refund status error {response.status_code}: {response.text}"
+        )
+
+    return response.json()
 # =====================================
 # 3. CHECK ORDER STATUS
 # =====================================

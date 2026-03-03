@@ -1350,29 +1350,27 @@ class CreateRefundView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Refund amount
         refund_amount = Decimal(str(amount)) if amount else payment.amount
-        
-        # Validate refund amount doesn't exceed payment
+
         if refund_amount > payment.amount:
             return Response(
                 {"statusCode": 0, "message": "Refund amount cannot exceed payment amount"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        # ✅ Check total refunds already processed
+
         total_refunded = Refund.objects.filter(
             payment=payment,
             status=Refund.STATUS_PROCESSED
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
-        
+
         if total_refunded + refund_amount > payment.amount:
             return Response(
                 {"statusCode": 0, "message": f"Cannot refund {refund_amount}. Already refunded {total_refunded}. Payment amount: {payment.amount}"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-            
+
         amount_in_paise = int(refund_amount * 100)
+        merchant_refund_id = f"REF-{order_id}-{int(time.time())}"
 
         try:
             access_token = get_tsp_token()
@@ -1389,10 +1387,9 @@ class CreateRefundView(APIView):
             }
 
             payload = {
-                "merchantRefundId": f"REF-{order_id}-{int(time.time())}",
+                "merchantRefundId": merchant_refund_id,
                 "originalMerchantOrderId": payment.order_id,
                 "amount": amount_in_paise,
-                "reason": reason,
             }
 
             resp = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -1405,23 +1402,13 @@ class CreateRefundView(APIView):
 
             refund_data = resp.json()
             provider_state = refund_data.get("state")
-            
-            # COMPLETE STATE MAPPING
-            # if provider_state in ["COMPLETED", "PROCESSED"]:
-            #     refund_status = Refund.STATUS_PROCESSED
-            # elif provider_state == "FAILED":
-            #     refund_status = Refund.STATUS_FAILED
-            # elif provider_state == "PENDING":
-            #     refund_status = Refund.STATUS_PENDING
-            # else:
-            #     refund_status = Refund.STATUS_PENDING
+
             if provider_state in ["COMPLETED", "PROCESSED"]:
                 refund_status = Refund.STATUS_PROCESSED
             elif provider_state == "FAILED":
                 refund_status = Refund.STATUS_FAILED
             else:
-                # PENDING or anything else — still mark as processed for sandbox
-                # because PhonePe sandbox returns PENDING but refund is actually done
+                # PENDING — mark as processed for sandbox
                 refund_status = Refund.STATUS_PROCESSED
 
             # Create refund record
@@ -1436,12 +1423,33 @@ class CreateRefundView(APIView):
                 provider_refund_response=refund_data
             )
 
-            # Only mark payment as REFUNDED if fully refunded
+            # Mark payment as REFUNDED if fully refunded
             if refund_status == Refund.STATUS_PROCESSED:
                 new_total_refunded = total_refunded + refund_amount
                 if new_total_refunded >= payment.amount:
                     payment.status = Payment.STATUS_REFUNDED
                     payment.save(update_fields=["status", "updated_at"])
+
+            # ✅ CHECK REFUND STATUS FROM PHONEPE
+            try:
+                from gateway.phonepe_client import check_phonepe_refund_status
+                refund_status_resp = check_phonepe_refund_status(merchant_refund_id)
+                provider_refund_state = refund_status_resp.get("state")
+
+                logger.info("Refund status check: merchantRefundId=%s, state=%s", merchant_refund_id, provider_refund_state)
+
+                if provider_refund_state == "COMPLETED":
+                    refund_obj.status = Refund.STATUS_PROCESSED
+                elif provider_refund_state == "FAILED":
+                    refund_obj.status = Refund.STATUS_FAILED
+                elif provider_refund_state in ["PENDING", "CONFIRMED"]:
+                    refund_obj.status = Refund.STATUS_PENDING
+
+                refund_obj.provider_refund_response = refund_status_resp
+                refund_obj.save(update_fields=["status", "provider_refund_response", "updated_at"])
+
+            except Exception as exc:
+                logger.warning("Refund status check failed (non-critical): %s", exc)
 
         except Exception as exc:
             logger.exception("Refund failed: %s", exc)
@@ -1458,12 +1466,11 @@ class CreateRefundView(APIView):
                 "refundId": refund_obj.id,
                 "providerRefundId": refund_obj.provider_refund_id,
                 "refundAmount": str(refund_amount),
-                "refundStatus": refund_status,
+                "refundStatus": refund_obj.status,
                 "totalRefunded": str(total_refunded + refund_amount)
             },
             status=status.HTTP_200_OK
         )
-
 
 # @method_decorator(csrf_exempt, name="dispatch")
 # class RazorpayWebhookView(APIView):
