@@ -2,9 +2,12 @@
 
 import time
 import requests
+import logging
 from django.conf import settings
 from django.utils import timezone
 from gateway.models import Payment
+
+logger = logging.getLogger(__name__)
 
 class PhonePeError(Exception):
     pass
