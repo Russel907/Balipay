@@ -2572,7 +2572,7 @@ class PhonePeWebhookView(APIView):
 
         expected_auth = f"SHA256 {expected_hash}"
 
-        if auth_header != expected_auth:
+        if auth_header != expected_auth and auth_header != expected_hash:
             logger.error("Invalid webhook authorization. Received: %s, Expected: %s", auth_header, expected_auth)
             return Response({"detail": "Invalid credentials"}, status=401)
 
@@ -2596,7 +2596,7 @@ class PhonePeWebhookView(APIView):
         logger.info("Webhook received: event=%s, merchantOrderId=%s, state=%s", event, merchant_order_id, state)
 
         # ✅ STEP 4: HANDLE REFUND EVENTS (use originalMerchantOrderId)
-        if event in ["pg.refund.completed", "pg.refund.failed"]:
+        if event in ["pg.refund.completed", "pg.refund.failed", "PG_REFUND_COMPLETED", "PG_REFUND_FAILED"]:
             original_order_id = payload.get("originalMerchantOrderId")
             if not original_order_id:
                 return Response({"status": "ok"}, status=200)
@@ -2629,10 +2629,10 @@ class PhonePeWebhookView(APIView):
         payment.attempts += 1
 
         # ✅ STEP 6: UPDATE STATUS using root level state
-        if event in ["pg.order.completed", "checkout.order.completed"] or state == "COMPLETED":
+        if event in ["pg.order.completed", "checkout.order.completed", "PG_ORDER_COMPLETED"] or state == "COMPLETED":
             payment.status = Payment.STATUS_PAID
             payment.paid_at = timezone.now()
-        elif event in ["pg.order.failed", "checkout.order.failed"] or state == "FAILED":
+        elif event in ["pg.order.failed", "checkout.order.failed", "PG_ORDER_FAILED"] or state == "FAILED":
             payment.status = Payment.STATUS_FAILED
         elif state == "EXPIRED":
             payment.status = Payment.STATUS_EXPIRED
