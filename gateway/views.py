@@ -803,6 +803,8 @@ class CreatePaymentView(APIView):
                     phonepe_resp = create_phonepe_qr_payment(
                         merchant_order_id=client_order_id,
                         amount_in_paise=amount_in_paise,
+                        merchant_mid=merchant.phonepe_mid,
+                        merchant_domain=merchant.website_url,
                         # callback_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/webhook/",
                         # redirect_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/redirect/",
                     )
@@ -812,7 +814,9 @@ class CreatePaymentView(APIView):
                         amount_in_paise=amount_in_paise,
                         # callback_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/webhook/",
                         # redirect_url=f"{settings.BASE_URL}/api/v1/payments/phonepe/redirect/",
-                        device_os=device_os
+                        device_os=device_os,
+                        merchant_mid=merchant.phonepe_mid,
+                        merchant_domain=merchant.website_url,
                     )
 
                 print("PHONEPE RESP:", phonepe_resp)
@@ -1250,7 +1254,7 @@ class CheckOrderStatusView(APIView):
             )
 
         try:
-            status_resp = check_phonepe_order_status(client_order_id)
+            status_resp = check_phonepe_order_status(client_order_id, merchant_mid=merchant.phonepe_mid)
             phonepe_state = status_resp.get("state")
 
             payment.attempts += 1
@@ -1380,7 +1384,7 @@ class CreateRefundView(APIView):
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"O-Bearer {access_token}",
-                "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
+                "X-MERCHANT-ID": merchant.phonepe_mid or settings.PHONEPE_MERCHANT_ID,
                 "X-SOURCE": "API",
                 "X-SOURCE-CHANNEL": "web",
                 "X-MERCHANT-IP": "127.0.0.1"
@@ -1433,7 +1437,7 @@ class CreateRefundView(APIView):
             # ✅ CHECK REFUND STATUS FROM PHONEPE
             try:
                 from gateway.phonepe_client import check_phonepe_refund_status
-                refund_status_resp = check_phonepe_refund_status(merchant_refund_id)
+                refund_status_resp = check_phonepe_refund_status(merchant_refund_id, merchant_mid=merchant.phonepe_mid)
                 provider_refund_state = refund_status_resp.get("state")
 
                 logger.info("Refund status check: merchantRefundId=%s, state=%s", merchant_refund_id, provider_refund_state)

@@ -66,7 +66,9 @@ def create_phonepe_payment(
     amount_in_paise: int,
     # callback_url: str,
     # redirect_url: str,
-    device_os: str = "ANDROID"
+    device_os: str = "ANDROID",
+    merchant_mid: str = None,
+    merchant_domain: str = None,
 ):
     access_token = get_tsp_token()
 
@@ -75,11 +77,11 @@ def create_phonepe_payment(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"O-Bearer {access_token}",
-        "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
+        "X-MERCHANT-ID": merchant_mid or settings.PHONEPE_MERCHANT_ID,
         "X-SOURCE": "API",
         "X-SOURCE-CHANNEL": "android",
         "X-BROWSER-FINGERPRINT": "testfingerprint123",
-        "X-MERCHANT-DOMAIN": "https://yourdomain.com",
+        "X-MERCHANT-DOMAIN": merchant_domain or settings.BASE_URL,
         "X-MERCHANT-IP": "127.0.0.1",
         "X-MERCHANT-APP-ID": "com.balipay.app",
         "X-SOURCE-CHANNEL-VERSION": "1"
@@ -105,6 +107,13 @@ def create_phonepe_payment(
         "paymentFlow": {
             "type": "PG",
             "paymentMode": payment_mode
+        },
+        "metaInfo": {
+            "udf1": "",
+            "udf2": "",
+            "udf3": "",
+            "udf4": "",
+            "udf5": ""
         }
     }
 
@@ -122,6 +131,8 @@ def create_phonepe_payment(
 def create_phonepe_qr_payment(
     merchant_order_id: str,
     amount_in_paise: int,
+    merchant_mid: str = None,
+    merchant_domain: str = None,
 ):
     access_token = get_tsp_token()
 
@@ -130,11 +141,11 @@ def create_phonepe_qr_payment(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"O-Bearer {access_token}",
-        "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
+        "X-MERCHANT-ID": merchant_mid or settings.PHONEPE_MERCHANT_ID,
         "X-SOURCE": "API",
         "X-SOURCE-CHANNEL": "web",
         "X-BROWSER-FINGERPRINT": "desktop_fingerprint",
-        "X-MERCHANT-DOMAIN": settings.BASE_URL,
+        "X-MERCHANT-DOMAIN": merchant_domain or settings.BASE_URL,
         "X-MERCHANT-IP": "127.0.0.1",
         "X-MERCHANT-APP-ID": "com.balipay.web",
         "X-SOURCE-CHANNEL-VERSION": "1"
@@ -149,6 +160,13 @@ def create_phonepe_qr_payment(
             "paymentMode": {
                 "type": "UPI_QR"
             }
+        },
+        "metaInfo": {
+            "udf1": "",
+            "udf2": "",
+            "udf3": "",
+            "udf4": "",
+            "udf5": ""
         }
     }
 
@@ -161,7 +179,7 @@ def create_phonepe_qr_payment(
 
     return response.json()
 
-def check_phonepe_refund_status(merchant_refund_id: str):
+def check_phonepe_refund_status(merchant_refund_id: str, merchant_mid: str = None):
     access_token = get_tsp_token()
 
     url = f"https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/refund/{merchant_refund_id}/status"
@@ -169,7 +187,7 @@ def check_phonepe_refund_status(merchant_refund_id: str):
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"O-Bearer {access_token}",
-        "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
+        "X-MERCHANT-ID": merchant_mid or settings.PHONEPE_MERCHANT_ID,
         "X-SOURCE": "API",
         "X-SOURCE-CHANNEL": "web",
         "X-MERCHANT-IP": "127.0.0.1"
@@ -186,7 +204,7 @@ def check_phonepe_refund_status(merchant_refund_id: str):
 # =====================================
 # 3. CHECK ORDER STATUS
 # =====================================
-def check_phonepe_order_status(merchant_order_id: str):
+def check_phonepe_order_status(merchant_order_id: str, merchant_mid: str = None):
     access_token = get_tsp_token()
 
     url = f"https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/order/{merchant_order_id}/status"
@@ -194,7 +212,7 @@ def check_phonepe_order_status(merchant_order_id: str):
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"O-Bearer {access_token}",
-        "X-MERCHANT-ID": settings.PHONEPE_MERCHANT_ID,
+        "X-MERCHANT-ID": merchant_mid or settings.PHONEPE_MERCHANT_ID,
         "X-SOURCE": "API",
         "X-SOURCE-CHANNEL": "web"
     }
