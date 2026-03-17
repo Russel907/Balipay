@@ -30,7 +30,7 @@ class MerchantSerializer(serializers.ModelSerializer):
             "gst_file",
             "pan_file",
             "signatory_file"
-            # ❌ no "token" here
+            
         ]
 
 
@@ -140,6 +140,8 @@ class MerchantProfileUpdateSerializer(serializers.ModelSerializer):
             "pan_file",
             "signatory_file",
             "email",
+            "phonepe_mid",
+            "website_url",
         ]
         read_only_fields = ["phone_number"]  # set files read-only if you handle them specially
 
