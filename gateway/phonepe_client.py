@@ -31,7 +31,7 @@ def get_tsp_token():
     if _token_cache["token"] and time.time() < (_token_cache["expires_at"] - buffer):
         return _token_cache["token"]
 
-    url = "https://api.phonepe.com/apis/pg/v1/oauth/token"
+    url = "https://api.phonepe.com/apis/identity-manager/v1/oauth/token"
 
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
