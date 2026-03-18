@@ -31,7 +31,7 @@ def get_tsp_token():
     if _token_cache["token"] and time.time() < (_token_cache["expires_at"] - buffer):
         return _token_cache["token"]
 
-    url = "https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token"
+    url = "https://api.phonepe.com/apis/pg/v1/oauth/token"
 
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
@@ -72,7 +72,7 @@ def create_phonepe_payment(
 ):
     access_token = get_tsp_token()
 
-    url = "https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/pay"
+    url = "https://api.phonepe.com/apis/pg/payments/v2/pay"
 
     headers = {
         "Content-Type": "application/json",
@@ -136,7 +136,7 @@ def create_phonepe_qr_payment(
 ):
     access_token = get_tsp_token()
 
-    url = "https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/pay"
+    url = "https://api.phonepe.com/apis/pg/payments/v2/pay"
 
     headers = {
         "Content-Type": "application/json",
@@ -182,7 +182,7 @@ def create_phonepe_qr_payment(
 def check_phonepe_refund_status(merchant_refund_id: str, merchant_mid: str = None):
     access_token = get_tsp_token()
 
-    url = f"https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/refund/{merchant_refund_id}/status"
+    url = f"https://api.phonepe.com/apis/pg/payments/v2/refund/{merchant_refund_id}/status"
 
     headers = {
         "Content-Type": "application/json",
@@ -207,7 +207,7 @@ def check_phonepe_refund_status(merchant_refund_id: str, merchant_mid: str = Non
 def check_phonepe_order_status(merchant_order_id: str, merchant_mid: str = None):
     access_token = get_tsp_token()
 
-    url = f"https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/order/{merchant_order_id}/status"
+    url = f"https://api.phonepe.com/apis/pg/payments/v2/order/{merchant_order_id}/status"
 
     headers = {
         "Content-Type": "application/json",
@@ -226,7 +226,7 @@ def check_phonepe_order_status(merchant_order_id: str, merchant_mid: str = None)
 
     return response.json()
 
-def poll_phonepe_order_until_terminal(merchant_order_id: str, timeout_seconds=1200):
+def poll_phonepe_order_until_terminal(merchant_order_id: str, timeout_seconds=1200, merchant_mid: str = None):
     start_time = time.time()
 
     schedule = [
@@ -264,7 +264,7 @@ def poll_phonepe_order_until_terminal(merchant_order_id: str, timeout_seconds=12
                 return
 
             try:
-                status_response = check_phonepe_order_status(merchant_order_id)
+                status_response = check_phonepe_order_status(merchant_order_id, merchant_mid=merchant_mid)
                 state = status_response.get("state")
 
                 # ✅ Refresh payment from db again (webhook might have updated during API call)

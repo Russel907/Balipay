@@ -846,7 +846,8 @@ class CreatePaymentView(APIView):
         
         thread = threading.Thread(
             target=poll_phonepe_order_until_terminal, 
-            args=(client_order_id,)
+            args=(client_order_id,),
+            kwargs={"merchant_mid": merchant.phonepe_mid}
         )
         thread.daemon = True
         thread.start()
@@ -1379,7 +1380,7 @@ class CreateRefundView(APIView):
         try:
             access_token = get_tsp_token()
 
-            url = "https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/refund"
+            url = "https://api.phonepe.com/apis/pg/payments/v2/refund"
 
             headers = {
                 "Content-Type": "application/json",
